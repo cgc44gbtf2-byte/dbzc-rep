@@ -189,9 +189,17 @@ The previous DBZC2 controlled-restart rollback restriction still applies.
 
 Batch 5 adds sanitizer helper/production-flow tests for legacy migration,
 bounded formats/costs, entropy failure, reconnect/save ordering, current-password
-checks, throttling, and sensitive command redaction. Verification status is
-reported in the PR checks; the earlier live-copyover tests below predate this
-authentication batch and do not validate its live login behavior.
+checks, throttling, and sensitive command redaction. All eight suites and a full
+rebuild passed locally. A fresh-copy isolated live run additionally verified
+SHA-crypt login migration persisted as Argon2id, repeated system saves and
+same-connection copyover recovery. This does not cover every auth path under
+live load. Consult the PR checks for Ubuntu/Debian CI status.
+
+The local Nix environment needs `libargon2` and `libxcrypt-legacy` plus the C
+toolchain. The non-legacy Nix crypt variant excludes some existing password
+formats; the auth suite intentionally fails when that compatibility is absent.
+The Makefile and auth tests consume NIX_CFLAGS_COMPILE/NIX_LDFLAGS when set.
+Ubuntu/Debian use the development packages listed above.
 
 ## Verification and remaining work
 

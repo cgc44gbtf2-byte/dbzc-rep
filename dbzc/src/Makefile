@@ -14,8 +14,8 @@ NOCRYPT =
 
 #Uncomment the line below if you are getting undefined crypt errors
 NEED_CRYPT = -lcrypt
-AUTH_CFLAGS ?=
-AUTH_LIBS ?= -largon2
+AUTH_CFLAGS ?= $(NIX_CFLAGS_COMPILE)
+AUTH_LIBS ?= $(NIX_LDFLAGS) -largon2
 
 #Uncomment the line below if you want a performance increase though beware
 #your core files may not be as much of a benefit if you do.

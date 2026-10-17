@@ -2629,7 +2629,7 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
         }
 
         check_multi( d, ch->name );
-	sprintf( buf, ch->pcdata->filename );
+snprintf( buf, sizeof(buf), "%s", ch->pcdata->filename );
 	d->character->desc = NULL;
 	free_char( d->character );
 	d->character = NULL;

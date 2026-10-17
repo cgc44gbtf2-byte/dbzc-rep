@@ -74,6 +74,8 @@ production = (function(info, "do_password") + "\n" +
 flags = shlex.split(os.environ.get(
     "AUTH_TEST_CFLAGS", "-std=gnu11 -g -O1 -Wall -Wextra -Werror "
     "-fsanitize=address,undefined -fno-omit-frame-pointer"))
+flags += shlex.split(os.environ.get("NIX_CFLAGS_COMPILE", ""))
+flags += shlex.split(os.environ.get("NIX_LDFLAGS", ""))
 with tempfile.TemporaryDirectory(prefix="auth-tests-") as tmp:
     generated = Path(tmp) / "integration.c"
     generated.write_text((root / "tests/auth_integration_harness.c").read_text()

@@ -35,7 +35,21 @@
 #include <dirent.h>
 #include <string.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <ctype.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/select.h>
 #include "mud.h"
+#include "copyover_record.h"
+#include "proxy_protocol.h"
+
+static int copyover_close_registered_socket(int fd)
+{
+    auth_proxy_forget(fd);
+    return close(fd);
+}
+#define close copyover_close_registered_socket
 
 
 void    send_to_desc_color args( ( const char *txt, DESCRIPTOR_DATA *d ) );
@@ -49,6 +63,311 @@ void update_skill( CHAR_DATA *ch );
 extern ROOM_INDEX_DATA *room_index_hash[MAX_KEY_HASH];
 
 OBJ_DATA *get_obj_ship args( (int vnum) );
+
+static int copyover_number(const char *text, int low, int high, int *value)
+{
+    char *end;
+    long number;
+    errno = 0;
+    number = strtol(text, &end, 10);
+    if (!*text || *end || errno == ERANGE || number < low || number > high)
+        return 0;
+    *value = number;
+    return 1;
+}
+
+static int copyover_name_valid(const char *name)
+{
+    const unsigned char *p = (const unsigned char *)name;
+    if (!*p || strlen(name) >= COPYOVER_NAME_SIZE)
+        return 0;
+    for (; *p; ++p)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')))
+            return 0;
+    return 1;
+}
+
+static void copyover_hex(char *out, const char *text)
+{
+    static const char digits[] = "0123456789abcdef";
+    const unsigned char *p = (const unsigned char *)text;
+    for (; *p; ++p)
+    {
+        *out++ = digits[*p >> 4];
+        *out++ = digits[*p & 15];
+    }
+    *out = '\0';
+}
+
+int copyover_write_record(FILE *fp, int desc, int room, int lastroom,
+                          int port, int idle, const char *name,
+                          const char *host, const char *client)
+{
+    char n[2 * COPYOVER_NAME_SIZE], h[2 * COPYOVER_HOST_SIZE];
+    char c[2 * COPYOVER_CLIENT_SIZE];
+    if (!host || !*host)
+        host = "unknown";
+    if (!client || !*client)
+        client = "Unidentified";
+    if (!name || !copyover_name_valid(name) || desc < 3 || desc >= FD_SETSIZE
+        || room < 0 || lastroom < 0 || port < 0 || port > 65535
+        || idle < 0 || idle > SHRT_MAX
+        || strlen(host) >= COPYOVER_HOST_SIZE || strlen(client) >= COPYOVER_CLIENT_SIZE)
+        return 0;
+    copyover_hex(n, name);
+    copyover_hex(h, host);
+    copyover_hex(c, client);
+    return fprintf(fp, "DBZC2 %d %d %d %d %d %s %s %s\n",
+                   desc, room, lastroom, port, idle, n, h, c) >= 0;
+}
+
+static int copyover_unhex(char *out, size_t size, const char *text)
+{
+    size_t length = strlen(text), i;
+    if (!length || length % 2 || length / 2 >= size)
+        return 0;
+    for (i = 0; i < length; i += 2)
+    {
+        int a, b;
+        unsigned char x = text[i], y = text[i + 1];
+        if (!isxdigit(x) || !isxdigit(y))
+            return 0;
+        a = x <= '9' ? x - '0' : tolower(x) - 'a' + 10;
+        b = y <= '9' ? y - '0' : tolower(y) - 'a' + 10;
+        if (!(a * 16 + b)) /* Embedded NUL would silently truncate a field. */
+            return 0;
+        out[i / 2] = a * 16 + b;
+    }
+    out[length / 2] = '\0';
+    return 1;
+}
+
+static char *copyover_token(char **cursor)
+{
+    char *start;
+    while (isspace((unsigned char)**cursor))
+        ++*cursor;
+    if (!**cursor)
+        return NULL;
+    start = *cursor;
+    while (**cursor && !isspace((unsigned char)**cursor))
+        ++*cursor;
+    if (**cursor)
+        *(*cursor)++ = '\0';
+    return start;
+}
+
+/* 1=player, 2=maxplayers, 3=end marker, 0=malformed. */
+static int copyover_parse_line(char *line, COPYOVER_RECORD *record, int *maxp)
+{
+    char *cursor = line, *tokens[9], *tail;
+    int i, compressed;
+    memset(record, 0, sizeof(*record));
+    for (i = 0; i < 8; ++i)
+    {
+        tokens[i] = copyover_token(&cursor);
+        if (!tokens[i])
+            break;
+    }
+    if (!i)
+        return 0;
+    if (!strcmp(tokens[0], "-1"))
+        return i == 1 ? 3 : 0;
+    if (!strcmp(tokens[0], "MAXP"))
+        return i == 2 && copyover_number(tokens[1], 0, INT_MAX, maxp) ? 2 : 0;
+    if (!strcmp(tokens[0], "DBZC2"))
+    {
+        if (i != 8 || !(tokens[8] = copyover_token(&cursor))
+            || copyover_token(&cursor))
+            return 0;
+        if (!copyover_number(tokens[1], 3, FD_SETSIZE - 1, &record->desc)
+            || !copyover_number(tokens[2], 0, INT_MAX, &record->room)
+            || !copyover_number(tokens[3], 0, INT_MAX, &record->lastroom)
+            || !copyover_number(tokens[4], 0, 65535, &record->port)
+            || !copyover_number(tokens[5], 0, SHRT_MAX, &record->idle)
+            || !copyover_unhex(record->name, sizeof(record->name), tokens[6])
+            || !copyover_unhex(record->host, sizeof(record->host), tokens[7])
+            || !copyover_unhex(record->client, sizeof(record->client), tokens[8]))
+            return 0;
+    }
+    else if (i == 3) /* Historical emergency: fd name host. */
+    {
+        if (!copyover_number(tokens[0], 3, FD_SETSIZE - 1, &record->desc)
+            || strlen(tokens[1]) >= sizeof(record->name)
+            || strlen(tokens[2]) >= sizeof(record->host))
+            return 0;
+        strcpy(record->name, tokens[1]);
+        strcpy(record->host, tokens[2]);
+        strcpy(record->client, "Unidentified");
+        record->legacy_emergency = 1;
+    }
+    else /* Historical normal: six integers, name, host, client remainder. */
+    {
+        if (i != 8
+            || !copyover_number(tokens[0], 0, FD_SETSIZE - 1, &record->desc)
+            || !copyover_number(tokens[1], 0, 0, &compressed)
+            || !copyover_number(tokens[2], 0, INT_MAX, &record->room)
+            || !copyover_number(tokens[3], 0, INT_MAX, &record->lastroom)
+            || !copyover_number(tokens[4], 0, 65535, &record->port)
+            || !copyover_number(tokens[5], 0, INT_MAX, &record->idle))
+            return 0;
+        while (isspace((unsigned char)*cursor))
+            ++cursor;
+        if (!strcmp(tokens[6], "maxp") && !strcmp(tokens[7], "maxp")
+            && record->desc == 0 && !record->room && !record->lastroom
+            && !record->port && !*cursor)
+        {
+            *maxp = record->idle;
+            return 2;
+        }
+        if (record->desc < 3 || record->idle > SHRT_MAX
+            || strlen(tokens[6]) >= sizeof(record->name)
+            || strlen(tokens[7]) >= sizeof(record->host))
+            return 0;
+        strcpy(record->name, tokens[6]);
+        strcpy(record->host, tokens[7]);
+        tail = cursor + strlen(cursor);
+        while (tail > cursor && isspace((unsigned char)tail[-1]))
+            *--tail = '\0';
+        if (!*cursor) /* A truncated normal player record is not recoverable. */
+            return 0;
+        if (strlen(cursor) >= sizeof(record->client))
+            return 0;
+        strcpy(record->client, cursor);
+    }
+    if (!copyover_name_valid(record->name))
+        return 0;
+    if (strcmp(tokens[0], "DBZC2"))
+    {
+        if (!strcmp(record->host, "(null)"))
+            strcpy(record->host, "unknown");
+        if (!strcmp(record->client, "(null)"))
+            strcpy(record->client, "Unidentified");
+    }
+    return 1;
+}
+
+/* Validate the entire file before recovery. Any error is fail-closed at boot. */
+static int copyover_read_records(FILE *fp, COPYOVER_RECORD **out,
+                                 size_t *count, int *maxp)
+{
+    COPYOVER_RECORD *records;
+    unsigned char seen[FD_SETSIZE];
+    char line[COPYOVER_LINE_SIZE];
+    size_t used = 0;
+    int ch, ended = 0, status, lines = 0, metadata = 0;
+    *out = NULL;
+    *count = 0;
+    *maxp = 0;
+    memset(seen, 0, sizeof(seen));
+    records = calloc(FD_SETSIZE, sizeof(*records));
+    if (!records)
+        return 0;
+    while (1)
+    {
+        COPYOVER_RECORD record;
+        if (++lines > FD_SETSIZE + 2)
+            goto fail;
+        used = 0;
+        while ((ch = fgetc(fp)) != EOF && ch != '\n')
+        {
+            if (!ch || used + 1 >= sizeof(line))
+                goto fail;
+            line[used++] = ch;
+        }
+        if (ferror(fp))
+            goto fail;
+        if (!used && ch == EOF)
+            break;
+        line[used] = '\0';
+        if (ended)
+        {
+            size_t i;
+            for (i = 0; i < used; ++i)
+                if (!isspace((unsigned char)line[i]))
+                    goto fail;
+            continue;
+        }
+        status = copyover_parse_line(line, &record, maxp);
+        if (!status)
+            goto fail;
+        if (status == 3)
+            ended = 1;
+        else if (status == 2 && metadata++)
+            goto fail;
+        else if (status == 1)
+        {
+            if (*count >= FD_SETSIZE || seen[record.desc])
+                goto fail;
+            seen[record.desc] = 1;
+            records[(*count)++] = record;
+        }
+    }
+    if (!ended)
+        goto fail;
+    *out = records;
+    return 1;
+fail:
+    free(records);
+    *count = 0;
+    return 0;
+}
+
+static int copyover_client_fd(int fd)
+{
+    struct sockaddr_storage peer;
+    socklen_t size = sizeof(peer), length = sizeof(int);
+    int type;
+    return fd >= 3
+        && getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) == 0
+        && type == SOCK_STREAM
+        && getpeername(fd, (struct sockaddr *)&peer, &size) == 0;
+}
+
+static int copyover_prepare_socket(int fd)
+{
+    int flags;
+    if (fd < 3 || fd >= FD_SETSIZE || !copyover_client_fd(fd))
+        return 0;
+    flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
+    {
+        close(fd);
+        return 0;
+    }
+    return 1;
+}
+
+/*
+ * Legacy emergency files omitted logging-in clients. Close all unclaimed
+ * connected sockets, never listeners/files/std streams, rather than leak them.
+ */
+static void copyover_close_orphans(const unsigned char *keep)
+{
+    DIR *directory = opendir("/proc/self/fd");
+    struct dirent *entry;
+    long fd, limit;
+    int number;
+    if (directory)
+    {
+        while ((entry = readdir(directory)) != NULL)
+            if (copyover_number(entry->d_name, 3, INT_MAX, &number)
+                && (number >= FD_SETSIZE || !keep[number])
+                && copyover_client_fd(number))
+                close(number);
+        closedir(directory);
+        return;
+    }
+    limit = sysconf(_SC_OPEN_MAX);
+    if (limit < 0)
+    {
+        bug("%s", "Cannot enumerate inherited copyover sockets; aborting.");
+        exit(1);
+    }
+    for (fd = 3; fd < limit && fd <= INT_MAX; ++fd)
+        if ((fd >= FD_SETSIZE || !keep[fd]) && copyover_client_fd(fd))
+            close(fd);
+}
 
 
 
@@ -523,6 +842,12 @@ void load_obj_files( void )
    log_string( "World state: loading objs" );
    sprintf( directory_name, "%s", COPYOVER_DIR );
    dp = opendir( directory_name );
+   if ( !dp )
+   {
+      perror( directory_name );
+      bug( "Load_obj_files: cannot open optional world object directory %s; skipping object restore. Run scripts/preflight.sh before startup.", directory_name );
+      return;
+   }
    dentry = readdir( dp );
    while ( dentry )
    {
@@ -727,8 +1052,23 @@ void do_copyover( CHAR_DATA *ch, char *argument )
         }
         else
         {
-         fprintf( fp, "%d %d %d %d %d %d %s %s %s\n", d->descriptor, 0,
-                  och->in_room->vnum, och->was_in_room->vnum, d->port, d->idle, och->name, d->host, d->client );
+         if ( !copyover_write_record(fp, d->descriptor,
+                    och->in_room ? och->in_room->vnum : ROOM_VNUM_TEMPLE,
+                    och->was_in_room ? och->was_in_room->vnum : ROOM_VNUM_TEMPLE,
+                    d->port, d->idle, och->name, d->host, d->client) )
+         {
+             FCLOSE(fp);
+             unlink(COPYOVER_FILE);
+             for ( d = first_descriptor; d; d = d->next )
+             {
+                 CHAR_DATA *saved = CH(d);
+                 if ( saved && saved->pcdata )
+                     saved->pcdata->copyover = FALSE;
+             }
+             send_to_char("Copyover record could not be written; aborted.\n\r", ch);
+             bug("%s", "Copyover record validation/write failed; exec cancelled.");
+             return;
+         }
 
             /* One of two places this gets changed */
             och->pcdata->copyover = TRUE;
@@ -740,9 +1080,26 @@ void do_copyover( CHAR_DATA *ch, char *argument )
         }
     }
 
-    fprintf( fp, "0 0 0 0 0 %d maxp maxp\n", sysdata.maxplayers );
-    fprintf( fp, "%s", "-1\n" );
-    FCLOSE( fp );
+    fprintf( fp, "MAXP %d\n-1\n", sysdata.maxplayers );
+    {
+        int failed = ferror(fp);
+        if (fclose(fp) != 0)
+            failed = 1;
+        fp = NULL;
+        if (failed)
+        {
+            unlink(COPYOVER_FILE);
+            for ( d = first_descriptor; d; d = d->next )
+            {
+                CHAR_DATA *saved = CH(d);
+                if ( saved && saved->pcdata )
+                    saved->pcdata->copyover = FALSE;
+            }
+            send_to_char("Copyover file could not be completed; aborted.\n\r", ch);
+            bug("%s", "Copyover file write/close failed; exec cancelled.");
+            return;
+        }
+    }
 
 
    /* added this in case there's a need to debug the contents of the various files */
@@ -754,6 +1111,28 @@ void do_copyover( CHAR_DATA *ch, char *argument )
 
     log_string( "Executing Copyover...." );
     save_timers();
+    /*
+     * Output queues live in this process. Do not close resources or exec until
+     * every accepted byte has reached the kernel, including detached closes.
+     */
+    if ( !copyover_output_ready() )
+    {
+        if ( unlink(COPYOVER_FILE) < 0 && errno != ENOENT )
+        {
+            perror( "do_copyover: unlink aborted recovery file" );
+            bug( "%s", "Could not remove aborted copyover recovery file!" );
+        }
+        for ( d = first_descriptor; d; d = d->next )
+        {
+            CHAR_DATA *och = CH(d);
+            if ( och && och->pcdata )
+                och->pcdata->copyover = FALSE;
+        }
+        log_string( "Copyover aborted: output pending or failed." );
+        send_to_char( "Copyover aborted: client output is pending or failed. "
+                      "Retry after clients drain.\n\r", ch );
+        return;
+    }
     /* Close reserve and other always-open files and release other resources */
     FCLOSE( fpReserve );
     FCLOSE( fpLOG );
@@ -803,9 +1182,11 @@ void copyover_recover( void )
 {
     DESCRIPTOR_DATA *d = NULL;
     FILE *fp;
-    char name[100];
-    char host[MSL], client[MSL];
-    int desc, dcompress, room, lastroom, dport, idle, maxp = 0;
+    COPYOVER_RECORD *records = NULL, *record;
+    unsigned char keep[FD_SETSIZE];
+    size_t record_count, record_index;
+    char *name;
+    int desc, room, lastroom, dport, idle, maxp = 0;
     bool fOld;
     SHIP_DATA *ship;
     OBJ_DATA *obj;
@@ -840,30 +1221,60 @@ void copyover_recover( void )
     }
     
     unlink( COPYOVER_FILE ); /* In case something crashes - doesn't prevent reading */
+    if (!copyover_read_records(fp, &records, &record_count, &maxp))
+    {
+        FCLOSE(fp);
+        bug("%s", "Malformed/truncated copyover file; aborting recovery.");
+        /* Fail closed: process exit closes ALL inherited descriptors, even
+         * those whose fd could not be identified from a corrupt record. */
+        exit(1);
+    }
+    FCLOSE(fp);
+    /* Validate all identities before loading any player or emitting output.
+     * Older hostname records cannot establish a trusted proxy identity. */
+    if (auth_proxy_mode())
+    {
+        extern int control;
+        if (!proxy_listener_valid(control))
+        {
+            bug("%s", "Unsafe proxy copyover listener; perform a controlled restart.");
+            exit(1);
+        }
+        for (record_index = 0; record_index < record_count; ++record_index)
+            if (!auth_proxy_register(records[record_index].desc,
+                                     records[record_index].host))
+            {
+                bug("%s", "Untrusted proxy copyover IP/socket (legacy hostname unsupported); perform a controlled restart.");
+                exit(1);
+            }
+    }
+    memset(keep, 0, sizeof(keep));
+    for (record_index = 0; record_index < record_count; ++record_index)
+    {
+        desc = records[record_index].desc;
+        if (!copyover_prepare_socket(desc))
+        {
+            bug("Copyover: invalid inherited client descriptor %d; skipped.", desc);
+            records[record_index].desc = -1;
+        }
+        else
+            keep[desc] = 1;
+    }
+    copyover_close_orphans(keep);
     load_timers();
 
-    for( ; ; )
+    for (record_index = 0; record_index < record_count; ++record_index)
     {
         d = NULL;
-
-        fscanf( fp, "%d %d %d %d %d %d %s %s %s\n", &desc, &dcompress, &room, &lastroom, &dport, &idle, name, host, client );        
-
-        if (desc == -1 || feof(fp) )
-            break;
-
-	  if( !str_cmp( name, "maxp" ) || !str_cmp( host, "maxp" ) )
-	  {
-	   maxp = idle;
-	   continue;
-	  }
-
-      /* Write something, and check if it goes error-free */
-//      if( !write_to_descriptor( desc, "\n\rThe ether swirls in chaos.\n\r", 0 ) )
-      if( !write_to_descriptor( desc, "", 0 ) )
-      {
-         close( desc ); /* nope */
-         continue;
-      }        
+        record = &records[record_index];
+        desc = record->desc;
+        if (desc < 0)
+            continue;
+        name = record->name;
+        room = record->legacy_emergency ? ROOM_VNUM_TEMPLE : record->room;
+        lastroom = record->legacy_emergency ? ROOM_VNUM_TEMPLE : record->lastroom;
+        dport = record->port;
+        idle = record->idle;
         CREATE( d, DESCRIPTOR_DATA, 1 );
 
         d->next		= NULL;
@@ -878,7 +1289,8 @@ void copyover_recover( void )
 
         CREATE( d->outbuf, char, d->outsize );
 //        d->user = STRALLOC( "Unknown" );
-        d->host = STRALLOC( host );
+        d->host = STRALLOC( record->host );
+        d->client = STRALLOC( record->client );
         d->port = dport;
         d->idle = idle;
         LINK( d, first_descriptor, last_descriptor, next, prev );
@@ -978,7 +1390,7 @@ void copyover_recover( void )
         for ( y = 0; y < MAX_LAYERS; y++ )
                    save_equipment[x][y] = NULL;
 
-    FCLOSE( fp );
+    free(records);
     if( maxp > sysdata.maxplayers )
 	sysdata.maxplayers = maxp;
     log_string( "Copyover recovery complete." );

@@ -225,6 +225,7 @@ void interpret( CHAR_DATA *ch, char *argument )
     int trust;
     int loglvl;
     bool found;
+    bool sensitive = FALSE;
     struct timeval time_used;
     long tmptime;
  
@@ -349,16 +350,6 @@ void interpret( CHAR_DATA *ch, char *argument )
 	/*
 	 * Turn off afk bit when any command performed.
 	 */
-/*
-        if ( xIS_SET(ch->act, PLR_FUSED) && xIS_SET(ch->act, PLR_INVIS2) && ch->fused_with )
-        {
-          if ( found && cmd->fuse == 0 )
-          interpret( ch->fused_with, arg);
-          else
-          send_to_char( "You are not the one that controls this.\n\r", ch);
-          return;
-        }
-*/
 
 	if ( !IS_NPC(ch) && xIS_SET ( ch->act, PLR_AFK)  && (str_cmp(command, "AFK")))
 	{
@@ -368,6 +359,17 @@ void interpret( CHAR_DATA *ch, char *argument )
 */
      	    act( AT_GREY, "$n is no longer afk.", ch, NULL, NULL, TO_CANSEE );
 	}
+    }
+
+    /* Also applies to SUB_REPEATCMD. Never rely on administrator-editable Log. */
+    sensitive = found && (cmd->do_fun == do_password || cmd->do_fun == do_delete ||
+                          cmd->do_fun == do_form_password || cmd->do_fun == do_mset);
+    if (sensitive) {
+        strcpy(logline, "[sensitive command redacted]");
+        if (xIS_SET(ch->act, PLR_FUSED)) {
+            send_to_char("Sensitive account commands cannot be used while fused.\n\r", ch);
+            return;
+        }
     }
 
         if ( xIS_SET(ch->act, PLR_FUSED) && xIS_SET(ch->act, PLR_INVIS2) && ch->fused_with )
@@ -399,12 +401,11 @@ void interpret( CHAR_DATA *ch, char *argument )
 /*
     sprintf( lastplayercmd, "** %s: %s", ch->name, logline );
 */
+    if ( sensitive || (found && cmd->log == LOG_NEVER) )
+	strcpy( logline, "XXXXXXXX XXXXXXXX XXXXXXXX" );
     sprintf( lastplayercmd, "%s used %s", ch->name, logline );
 
-    if ( found && cmd->log == LOG_NEVER )
-	strcpy( logline, "XXXXXXXX XXXXXXXX XXXXXXXX" );
-
-    loglvl = found ? cmd->log : LOG_NORMAL;
+    loglvl = sensitive ? LOG_NEVER : (found ? cmd->log : LOG_NORMAL);
 
     /*
      * Write input line to watch files if applicable
@@ -767,7 +768,7 @@ void interpret( CHAR_DATA *ch, char *argument )
     if ( tmptime > 1500000 )
     {
         sprintf(log_buf, "[*****] LAG: %s: %s %s (R:%d S:%ld.%06ld)", ch->name,
-                cmd->name, (cmd->log == LOG_NEVER ? "XXX" : argument),
+                cmd->name, (sensitive || cmd->log == LOG_NEVER ? "XXX" : argument),
 		ch->in_room ? ch->in_room->vnum : 0,
 		time_used.tv_sec, time_used.tv_usec );
 	log_string_plus(log_buf, LOG_NORMAL, get_trust(ch));

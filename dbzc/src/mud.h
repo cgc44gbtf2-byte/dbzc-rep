@@ -29,6 +29,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
+#include "password_auth.h"
+#include "auth_rate.h"
 
 /* force the who command to require an argument (should use cset) */
 // #define REQWHOARG
@@ -37,7 +39,7 @@
   #include <winsock.h>
   #include <sys/types.h>
   #pragma warning( disable: 4018 4244 4761)
-  #define NOCRYPT
+  #error "Secure password authentication requires Linux and libargon2"
   #define index strchr
   #define rindex strrchr
 #else
@@ -792,6 +794,13 @@ struct	descriptor_data
     char *		outbuf;
     unsigned long	outsize;
     int			outtop;
+    /* Prepared prefix: prompt/snoop copied once, retained until sent. */
+    int                 out_pending;
+    bool                out_error;
+    bool                out_prompted;
+    unsigned long       out_epoch;
+    int                 out_budget;
+    int                 out_calls;
     char *		pagebuf;
     unsigned long	pagesize;
     int			pagetop;
@@ -1879,7 +1888,7 @@ typedef enum
   WEAR_ARMS, WEAR_SHIELD, WEAR_ABOUT, WEAR_WAIST, WEAR_WRIST_L, WEAR_WRIST_R,
   WEAR_WIELD, WEAR_HOLD, WEAR_DUAL_WIELD, WEAR_EARS, WEAR_EYES,
   WEAR_MISSILE_WIELD, WEAR_BACK, WEAR_FACE, WEAR_ANKLE_L, WEAR_ANKLE_R, WEAR_SLOT1, WEAR_SLOT2,
-  MAX_WEAR, WEAR_BUG, WEAR_BUG, WEAR_WIELD_L, WEAR_WIELD_R, 
+  MAX_WEAR, WEAR_BUG, WEAR_BUG_RESERVED, WEAR_WIELD_L, WEAR_WIELD_R,
 } wear_locations;
 
 /* Board Types */
@@ -4328,10 +4337,10 @@ char *	crypt		args( ( const char *key, const char *salt ) );
  * In particular, the U.S. Government prohibits its export from the
  * United States to foreign countries.
  *
- * Turn on NOCRYPT to keep passwords in plain text.
+ * NOCRYPT is no longer supported: authentication always requires secure hashes.
  */
 #if	defined(NOCRYPT)
-#define crypt(s1, s2)	(s1)
+#error "NOCRYPT is insecure and unsupported"
 #endif
 
 
@@ -4581,6 +4590,7 @@ void    add_member      args( (char *name, char *shortname) );
 /* comm.c */
 int     file_size       args( ( char * buf ) );
 void    emergancy_copyover      args( ( void ) );
+bool    copyover_output_ready   args( ( void ) );
 void	close_socket	args( ( DESCRIPTOR_DATA *dclose, bool force ) );
 void	write_to_buffer	args( ( DESCRIPTOR_DATA *d, const char *txt,
 				int length ) );
@@ -4892,7 +4902,7 @@ sh_int 	get_curr_pdef		args( ( CHAR_DATA *ch ) );
 sh_int 	get_curr_edef		args( ( CHAR_DATA *ch ) );
 sh_int 	get_curr_eatk		args( ( CHAR_DATA *ch ) );
 sh_int 	get_curr_health		args( ( CHAR_DATA *ch ) );
-char *htmlcolor		args( ( char *arg ) );
+char *htmlcolor		args( ( const char *arg ) );
 void	do_looksky	args( ( CHAR_DATA *ch, char *argument ) );
 //double sqrt args( (double Nbr) );
 int  clan_name args( ( CLAN_DATA *clan ) );
@@ -5467,4 +5477,7 @@ void Win32_Exit(int exit_code);
 #define IN_TRAIN(ch)		(IS_SET((ch)->in_room->room_flags2, ROOM_TRAIN))
 #define IN_CONTROL(ch)          (IS_SET((ch)->in_room->room_flags2, ROOM_CONTROL))
 #define IN_NOQUITROOM(ch)       (IS_SET((ch)->in_room->room_flags2, ROOM_NOQUIT))
+
+/* web_output.c: htmlcolor returns an owned STRALLOC reference (or NULL). */
+int write_htmlcolor( FILE *stream, const char *src );
 #define IN_NOEXIT(ch)           (IS_SET((ch)->in_room->room_flags2, ROOM_NOEXIT))

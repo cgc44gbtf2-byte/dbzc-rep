@@ -857,8 +857,9 @@ void do_bamfout( CHAR_DATA *ch, char *argument )
 
 void do_rank( CHAR_DATA *ch, char *argument )
 {
-   char buf[MAX_STRING_LENGTH];
+   char buf[MAX_STRING_LENGTH] = "";
    char buf2[MSL];
+   char *rank;
   set_char_color( AT_IMMORT, ch );
 
   if ( IS_NPC(ch) )
@@ -869,12 +870,10 @@ void do_rank( CHAR_DATA *ch, char *argument )
     send_to_char( "   or:  rank none.\n\r", ch );
     return;
   }
-/*  smash_tilde( argument );
-  DISPOSE( ch->pcdata->rank );*/
   if ( !str_cmp( argument, "none" ) && !IS_IMMORTAL(ch))
   {
   sprintf( buf, "&w&W%-12.12s&Y", capitalize(npc_race[ch->race]));
-  ch->pcdata->rank = str_dup(buf);
+  rank = STRALLOC(buf);
   }
   else if ( !str_cmp( argument, "none" ) && IS_IMMORTAL(ch))
   {
@@ -910,15 +909,19 @@ void do_rank( CHAR_DATA *ch, char *argument )
   sprintf( buf, "&WPlayer Tester");
   if (ch->level == 49)
   sprintf( buf, "&WRP Assistant");
-  sprintf(buf, "&w&W%-12.12s&Y", buf);
-  ch->pcdata->rank = str_dup(buf2);
+  sprintf(buf2, "&w&W%-12.12s&Y", buf);
+  rank = STRALLOC(buf2);
   }
   else 
   { 
-  ch->pcdata->rank = str_dup( argument );
+  rank = STRALLOC( argument );
+  STRFREE( ch->pcdata->rank );
+  ch->pcdata->rank = rank;
   send_to_char( "Ok.\n\r", ch );
   return;
   }
+  STRFREE( ch->pcdata->rank );
+  ch->pcdata->rank = rank;
 }
 
 void do_retire( CHAR_DATA *ch, char *argument )
@@ -5280,8 +5283,11 @@ void do_mortalize( CHAR_DATA *ch, char *argument )
         victim->hit      = victim->max_hit;
         victim->mana     = victim->max_mana;
         victim->move     = victim->max_move;
-        DISPOSE( victim->pcdata->rank );
-        victim->pcdata->rank = str_dup( "" );
+        {
+          char *rank = STRALLOC( "" );
+          STRFREE( victim->pcdata->rank );
+          victim->pcdata->rank = rank;
+        }
         if ( xIS_SET(victim->act, PLR_WIZINVIS) )
           victim->pcdata->wizinvis = victim->trust;
         if ( xIS_SET(victim->act, PLR_WIZINVIS)
@@ -5928,33 +5934,12 @@ void do_set_boot_time( CHAR_DATA *ch, char *argument)
     }
 }
 
-/* Online high level immortal command for displaying what the encryption
- * of a name/password would be, taking in 2 arguments - the name and the
- * password - can still only change the password if you have access to 
- * pfiles and the correct password
- */ 
+/* Keep the old command entry inert; never display reusable password hashes. */
 void do_form_password( CHAR_DATA *ch, char *argument) 
 {
-   char arg[MAX_STRING_LENGTH];
-
+   (void)argument;
    set_char_color( AT_IMMORT, ch );  
-
-   argument = one_argument(argument, arg);
-
-   if( !arg || arg[0] == '\0' )
-   {
-	send_to_char( "Usage: formpass <Name> <password>\n\r", ch );
-	send_to_char( "Name should be capitalized for proper results.\n\r", ch );
-	return;
-   }
-
-   if( !argument || argument[0] == '\0' )
-   {
-	do_form_password( ch, "" );
-	return;
-   }
-
-   ch_printf(ch, "Those two arguments encrypted result in:  %s\n\r", crypt(arg, argument));
+   send_to_char("Password hash display is disabled. Use the password reset command.\n\r", ch);
    return;
 }
 
@@ -9467,9 +9452,10 @@ bool is_leader( CHAR_DATA *ch );
 void do_delete (CHAR_DATA * ch, char *argument)
 {
   char arg[MAX_INPUT_LENGTH], buf[MAX_INPUT_LENGTH];
-  argument = one_argument (argument, arg);
+  const char *tokens = argument;
+  if (IS_NPC(ch) || !ch->pcdata) return;
 
-  if (arg[0] == '\0')
+  if (!password_token(&tokens, arg, sizeof(arg)) || *tokens)
     {
       send_to_char ("\n\rIf you would like to delete this character, the syntax is Delete <PassWord>:\n\r", ch);
       return;
@@ -9480,7 +9466,11 @@ void do_delete (CHAR_DATA * ch, char *argument)
      return;
   }
 
-  if ( strcmp( crypt( arg, ch->pcdata->pwd ), ch->pcdata->pwd ) )
+  if (!ch->desc || !auth_attempt(ch->desc->descriptor, ch->pcdata->filename)) {
+      send_to_char("Authentication temporarily busy. Try again later.\n\r", ch);
+      return;
+  }
+  if (!password_verify(arg, ch->pcdata->pwd))
     {
       send_to_char ("Wrong password.\n\r", ch);
       return;

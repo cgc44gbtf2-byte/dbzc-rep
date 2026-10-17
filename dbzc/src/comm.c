@@ -39,6 +39,9 @@
 #include <crypt.h>
 #endif
 #include "mud.h"
+#include "copyover_record.h"
+#include "proxy_protocol.h"
+void initialize_descriptor(int desc, const char *ip, unsigned short port);
 //#include <zlib.h>
 #include <arpa/telnet.h>
 
@@ -76,7 +79,12 @@ void	update_skill( CHAR_DATA *ch );
   #include <arpa/inet.h>
   #include <arpa/telnet.h>
   #include <netdb.h>
-  #define closesocket close
+  static int close_registered_socket(int fd)
+  {
+      auth_proxy_forget(fd);
+      return close(fd);
+  }
+  #define closesocket close_registered_socket
 #endif
 
 #ifdef sun
@@ -107,6 +115,20 @@ void	kill_auth	args( ( DESCRIPTOR_DATA *d ) );
 
 void    save_sysdata args( ( SYSTEM_DATA sys ) );
 void    send_to_desc_color args( ( const char *txt, DESCRIPTOR_DATA *d ) );
+
+/* Hard per-client memory and per-pulse syscall/byte bounds. */
+#define OUTPUT_LIMIT 65536
+#define OUTPUT_BYTES 16384
+#define OUTPUT_CALLS 4
+#define OUTPUT_CLOSE_PULSES 8
+static unsigned long output_epoch = 1;
+static DESCRIPTOR_DATA *closing_output;
+static bool queue_output( DESCRIPTOR_DATA *d, const char *txt, int length );
+static bool prepare_output( DESCRIPTOR_DATA *d );
+static bool drain_output( DESCRIPTOR_DATA *d );
+static int send_output( int fd, const char *txt, int length );
+static void finish_output_close( DESCRIPTOR_DATA *d, bool force );
+static void drain_closed_output( void );
 
 /*
  * Global variables.
@@ -373,6 +395,19 @@ int port;
 	conjava  = init_socket( port+20);*/
     }
     
+    if (getenv("DBZC_PROXY_PROTOCOL")
+        && strcmp(getenv("DBZC_PROXY_PROTOCOL"), "0")
+        && strcmp(getenv("DBZC_PROXY_PROTOCOL"), "1"))
+    {
+        fprintf(stderr, "DBZC_PROXY_PROTOCOL must be 0 or 1.\n");
+        exit(1);
+    }
+    if ((auth_proxy_mode() && !proxy_listener_valid(control))
+        || fcntl(control, F_SETFL, O_NONBLOCK) < 0)
+    {
+        fprintf(stderr, "Unsafe inherited listener: proxy mode requires IPv4 loopback. Perform a controlled restart.\n");
+        exit(1);
+    }
     /* I don't know how well this will work on an unnamed machine as I don't
        have one handy, and the man pages are ever-so-helpful.. -- Alty */
     if (gethostname(hostn, sizeof(hostn)) < 0)
@@ -390,6 +425,7 @@ int port;
   
   game_loop( );    
 
+    proxy_pending_close();
     closesocket( control  );
 
 #ifdef WIN32
@@ -466,6 +502,17 @@ int init_socket( int port )
     sa.sin_family   = AF_INET;
     sa.sin_port	    = htons( port );
 
+    {
+        const char *bind_address = getenv("DBZC_BIND_ADDRESS");
+        if (!bind_address) bind_address = "127.0.0.1";
+        if (inet_pton(AF_INET, bind_address, &sa.sin_addr) != 1
+            || (auth_proxy_mode() && (ntohl(sa.sin_addr.s_addr) >> 24) != 127))
+        {
+            fprintf(stderr, "DBZC_BIND_ADDRESS must be numeric IPv4; proxy mode requires loopback.\n");
+            closesocket(fd);
+            exit(1);
+        }
+    }
     if ( bind( fd, (struct sockaddr *) &sa, sizeof(sa) ) == -1 )
     {
 	perror( "Init_socket: bind" );
@@ -480,6 +527,12 @@ int init_socket( int port )
 	exit( 1 );
     }
 
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0)
+    {
+        perror("Init_socket: nonblocking");
+        closesocket(fd);
+        exit(1);
+    }
     return fd;
 }
 
@@ -553,7 +606,7 @@ bool chk_watch(sh_int player_level, char *player_name, char *player_site)
 void accept_new( int ctrl )
 {
 	static struct timeval null_time;
-	DESCRIPTOR_DATA *d;
+	DESCRIPTOR_DATA *d, *dn;
 	/* int maxdesc; Moved up for use with id.c as extern */
 
 #if defined(MALLOC_DEBUG)
@@ -567,11 +620,24 @@ void accept_new( int ctrl )
 	FD_ZERO( &in_set  );
 	FD_ZERO( &out_set );
 	FD_ZERO( &exc_set );
+	if ( ctrl < 0 || ctrl >= FD_SETSIZE )
+	{
+	    bug( "Accept_new: controlling descriptor %d outside select range", ctrl );
+	    return;
+	}
 	FD_SET( ctrl, &in_set );
 	maxdesc	= ctrl;
 	newdesc = 0;
-	for ( d = first_descriptor; d; d = d->next )
+	for ( d = first_descriptor; d; d = dn )
 	{
+	    dn = d->next;
+	    /* Copyover can restore descriptors without going through accept(). */
+	    if ( d->descriptor < 0 || d->descriptor >= FD_SETSIZE )
+	    {
+	        bug( "Accept_new: descriptor %d outside select range", d->descriptor );
+	        close_socket( d, TRUE );
+	        continue;
+	    }
 	    maxdesc = UMAX( maxdesc, d->descriptor );
 	    FD_SET( d->descriptor, &in_set  );
 	    FD_SET( d->descriptor, &out_set );
@@ -580,6 +646,7 @@ void accept_new( int ctrl )
 	      break;
 	}
 //	auth_maxdesc(&maxdesc, &in_set, &out_set, &exc_set);
+        proxy_pending_select(&in_set, &maxdesc);
 	
 	if ( select( maxdesc+1, &in_set, &out_set, &exc_set, &null_time ) < 0 )
 	{
@@ -599,10 +666,12 @@ void accept_new( int ctrl )
 	    newdesc = ctrl;
 	    new_descriptor( newdesc );
 	}
+        proxy_pending_poll(initialize_descriptor);
 }
 
 void emergancy_copyover( void )
 {
+  /* Crash recovery is best-effort: unlike normal copyover it may lose output. */
   FILE *fp;
   DESCRIPTOR_DATA *d;
   char buf[100], buf2[100], buf3[100], buf4[100], buf5[100];
@@ -621,26 +690,45 @@ void emergancy_copyover( void )
   sprintf (buf, "\n\r [ALERT]: EMERGENCY COPYOVER - Keep calm, we might pull through!\n\r" );
 	  
   /* For each playing descriptor, save its state */
-  for (d = first_descriptor; d ; d = d->next)
+  for (d = first_descriptor; d ; d = d_next)
   {
       CHAR_DATA * och = CH (d);
       d_next = d->next; /* We delete from the list , so need to save this */
 		
-      if (!och || !d->character || d->connected > CON_PLAYING) /* drop those logging on */
+      if (!och || !d->character || d->connected < CON_PLAYING) /* drop those logging on */
       {
 	  write_to_descriptor (d->descriptor, "\n\rSorry, we are rebooting. Come back in a few minutes.\n\r", 0);
-	  /* close_socket (d, FALSE); */
+	  close_socket (d, TRUE);
       }
       else
       {
-	  fprintf (fp, "%d %s %s\n", d->descriptor, och->name, d->host);
+	  if (!copyover_write_record(fp, d->descriptor,
+                  och->in_room ? och->in_room->vnum : ROOM_VNUM_TEMPLE,
+                  och->was_in_room ? och->was_in_room->vnum : ROOM_VNUM_TEMPLE,
+                  d->port, d->idle, och->name, d->host, d->client))
+          {
+              fclose(fp);
+              unlink(COPYOVER_FILE);
+              log_string("Emergency copyover record write failed; aborted.");
+              return;
+          }
 	  save_char_obj (och);
 	  write_to_descriptor (d->descriptor, buf, 0);
       }
   }
 	
-  fprintf (fp, "-1\n");
-  fclose (fp);
+  fprintf (fp, "MAXP %d\n-1\n", sysdata.maxplayers);
+  {
+      int failed = ferror(fp);
+      if (fclose(fp) != 0)
+          failed = 1;
+      if (failed)
+      {
+          unlink(COPYOVER_FILE);
+          log_string("Emergency copyover file write/close failed; aborted.");
+          return;
+      }
+  }
 	
   fclose (fpReserve);
   fclose (fpLOG);
@@ -648,6 +736,8 @@ void emergancy_copyover( void )
   sprintf (buf, "%d", port);
   sprintf (buf2, "%d", control);
   sprintf (buf3, "%d", control2);
+  strcpy (buf4, "0");
+  strcpy (buf5, "0");
 
   execl (EXE_FILE,  "dbzc", buf, "copyover", buf2, buf3, buf4, buf5, (char *) NULL);
 
@@ -724,6 +814,8 @@ void game_loop( )
     /* Main loop */
     while ( !mud_down )
     {
+	++output_epoch;
+	drain_closed_output();
 	accept_new( control  );
 /*	accept_new( control2 );
 	accept_new( conclient);
@@ -744,6 +836,12 @@ void game_loop( )
 	    }
  	    d_next = d->next;   
 
+	    if ( d->out_error )
+	    {
+	        close_socket( d, TRUE );
+	        continue;
+	    }
+	    d->out_prompted = FALSE;
 	    d->idle++;	/* make it so a descriptor can idle out */
 	    if ( FD_ISSET( d->descriptor, &exc_set ) )
 	    {
@@ -753,7 +851,6 @@ void game_loop( )
 		&& ( d->connected == CON_PLAYING
 		||   d->connected == CON_EDITING ) )
 		    save_char_obj( d->character );
-		d->outtop	= 0;
 		close_socket( d, TRUE );
 		continue;
 	    }
@@ -764,8 +861,7 @@ void game_loop( )
 	    {
 		write_to_descriptor( d->descriptor,
 		 "Idle timeout... disconnecting.\n\r", 0 );
-		d->outtop	= 0;
-		close_socket( d, TRUE );
+		close_socket( d, FALSE );
 		continue;
 	    }
 	    else
@@ -784,7 +880,6 @@ void game_loop( )
 			    && ( d->connected == CON_PLAYING
 			    ||   d->connected == CON_EDITING ) )
 				save_char_obj( d->character );
-			    d->outtop	= 0;
 			    close_socket( d, FALSE );
 			    continue;
 			}
@@ -842,6 +937,11 @@ void game_loop( )
 	{
 	    d_next = d->next;   
 
+	    if ( d->out_error )
+	    {
+	        close_socket( d, TRUE );
+	        continue;
+	    }
 	    if ( ( d->fcommand || d->outtop > 0 )
 	    &&   FD_ISSET(d->descriptor, &out_set) )
 	    {
@@ -853,8 +953,7 @@ void game_loop( )
 	            && ( d->connected == CON_PLAYING
 	            ||   d->connected == CON_EDITING ) )
 	                save_char_obj( d->character );
-	            d->outtop = 0;
-	            close_socket(d, FALSE);
+	            close_socket(d, TRUE);
 	          }
 	        }
 		else if ( !flush_buffer( d, TRUE ) )
@@ -863,8 +962,7 @@ void game_loop( )
 		    && ( d->connected == CON_PLAYING
 		    ||   d->connected == CON_EDITING ) )
 			save_char_obj( d->character );
-		    d->outtop	= 0;
-		    close_socket( d, FALSE );
+		    close_socket( d, TRUE );
 		}
 	    }
 	    if ( d == last_descriptor )
@@ -936,11 +1034,13 @@ void game_loop( )
 
 void new_descriptor( int new_desc )
 {
-    char buf[MAX_STRING_LENGTH];
-    DESCRIPTOR_DATA *dnew;
     struct sockaddr_in sock;
-    struct hostent *from;
-    size_t desc, size;
+    int desc;
+#ifdef WIN32
+    int size;
+#else
+    socklen_t size;
+#endif
     char bugbuf[MAX_STRING_LENGTH];
 //    char buf2[MSL];
 #ifdef WIN32
@@ -963,8 +1063,17 @@ void new_descriptor( int new_desc )
 	set_alarm( 0 );
 	return;
     }
+    auth_proxy_forget(desc);
+    if ( desc >= FD_SETSIZE )
+    {
+      bug( "New_descriptor: descriptor %d outside select range", desc );
+      closesocket( desc );
+      set_alarm( 0 );
+      return;
+    }
     if ( check_bad_desc( new_desc ) )
     {
+      closesocket( desc );
       set_alarm( 0 );
       return;
     }
@@ -983,12 +1092,36 @@ void new_descriptor( int new_desc )
 #endif
     {
 	perror( "New_descriptor: fcntl: FNDELAY" );
+	closesocket( desc );
 	set_alarm( 0 );
 	return;
     }
     if ( check_bad_desc( new_desc ) )
+    {
+      closesocket( desc );
+      set_alarm( 0 );
       return;
+    }
 
+    if (auth_proxy_mode())
+    {
+        if (!proxy_pending_add(new_desc, desc))
+            closesocket(desc);
+        set_alarm(0);
+        return;
+    }
+    initialize_descriptor(desc, inet_ntoa(sock.sin_addr), ntohs(sock.sin_port));
+}
+
+void initialize_descriptor(int desc, const char *ip, unsigned short port)
+{
+    char buf[MAX_STRING_LENGTH];
+    DESCRIPTOR_DATA *dnew;
+    struct sockaddr_in sock;
+    struct hostent *from;
+    memset(&sock, 0, sizeof(sock));
+    if (!auth_proxy_mode())
+        inet_pton(AF_INET, ip, &sock.sin_addr);
     CREATE( dnew, DESCRIPTOR_DATA, 1 );
     dnew->next		= NULL;
     dnew->descriptor	= desc;
@@ -998,14 +1131,14 @@ void new_descriptor( int new_desc )
     dnew->idle		= 0;
     dnew->lines		= 0;
     dnew->scrlen	= 24;
-    dnew->port		= ntohs( sock.sin_port );
+    dnew->port		= port;
   //dnew->user 		= STRALLOC("(unknown)");
     dnew->newstate	= 0;
     dnew->prevcolor	= 0x07;
     dnew->client       = STRALLOC( "Unidentified" ); /* Terminal detect */
 
     CREATE( dnew->outbuf, char, dnew->outsize );
-    strcpy( buf, inet_ntoa( sock.sin_addr ) );
+    strcpy( buf, ip );
 
 /*
  *   HardBan - Disconnects user before they have a chance to name resolve.
@@ -1420,7 +1553,7 @@ if(!str_cmp(buf,"12.203.200.101"))
 		buf, dnew->port );
 
     log_string_plus( log_buf, LOG_COMM, sysdata.log_level );
-    if ( sysdata.NO_NAME_RESOLVING )
+    if ( auth_proxy_mode() || sysdata.NO_NAME_RESOLVING )
       dnew->host = STRALLOC( buf );
     else
     {
@@ -1532,10 +1665,11 @@ void free_desc( DESCRIPTOR_DATA *d )
       DISPOSE( d->outbuf );
     if ( d->pagebuf )
 	DISPOSE( d->pagebuf );
-//        STRFREE( d->client );
+    if ( d->client )
+      STRFREE( d->client );
 
     DISPOSE( d );
-    --num_descriptors;
+    /* Unlinked, rejected connections have never been counted. */
     return;
 }
 
@@ -1547,8 +1681,8 @@ void close_socket( DESCRIPTOR_DATA *dclose, bool force )
     bool DoNotUnlink = FALSE;
 
     /* flush outbuf */
-    if ( !force && dclose->outtop > 0 )
-	flush_buffer( dclose, FALSE );
+    if ( !force && dclose->outtop > 0 && !flush_buffer( dclose, FALSE ) )
+        force = TRUE;
 
     /* say bye to whoever's snooping this descriptor */
     if ( dclose->snoop_by )
@@ -1680,8 +1814,10 @@ void close_socket( DESCRIPTOR_DATA *dclose, bool force )
     if ( dclose->descriptor == maxdesc )
       --maxdesc;
 
-    free_desc( dclose );
-    --num_descriptors;
+    /* Recovery counts a descriptor only after its character loads. */
+    if ( dclose->connected != CON_COPYOVER_RECOVER )
+      --num_descriptors;
+    finish_output_close( dclose, force );
     return;
 }
 
@@ -1885,134 +2021,231 @@ void read_from_buffer( DESCRIPTOR_DATA *d )
 /*
  * Low level output function.
  */
+/* Append atomically; failures latch until a safe event-loop close boundary. */
+static bool queue_output( DESCRIPTOR_DATA *d, const char *txt, int length )
+{
+    unsigned long size;
+
+    if ( d->out_error || !d->outbuf )
+        return FALSE;
+    if ( length < 0 || length > OUTPUT_LIMIT - d->outtop )
+    {
+        bug( "Output queue overflow on descriptor %d", d->descriptor );
+        d->out_error = TRUE;
+        return FALSE;
+    }
+    size = d->outsize;
+    while ( size <= (unsigned long)(d->outtop + length) )
+        size = UMIN(size * 2, OUTPUT_LIMIT + 1);
+    if ( size != d->outsize )
+    {
+        d->outsize = size;
+        RECREATE( d->outbuf, char, d->outsize );
+    }
+    memcpy(d->outbuf + d->outtop, txt, length);
+    d->outtop += length;
+    d->outbuf[d->outtop] = '\0';
+    return TRUE;
+}
+
+/* Move the staging suffix into the prepared prefix, copying snoops once. */
+static bool prepare_output( DESCRIPTOR_DATA *d )
+{
+    DESCRIPTOR_DATA *observers[2];
+    char name[MAX_INPUT_LENGTH];
+    int start = d->out_pending, length = d->outtop - start, i;
+
+    if ( d->out_error )
+        return FALSE;
+    if ( !length )
+        return TRUE;
+    d->out_pending = d->outtop;
+    observers[0] = d->snoop_by;
+    observers[1] = d->fused_with;
+    for ( i = 0; i < 2; ++i )
+    {
+        DESCRIPTOR_DATA *observer = observers[i];
+        if ( !observer || observer == d )
+            continue;
+        if ( d->character && d->character->name )
+        {
+            if ( d->original && d->original->name )
+                snprintf(name, sizeof(name), "%s (%s)",
+                         d->character->name, d->original->name);
+            else
+                snprintf(name, sizeof(name), "%s", d->character->name);
+            write_to_buffer(observer, name, 0);
+        }
+        write_to_buffer(observer, "% ", 2);
+        write_to_buffer(observer, d->outbuf + start, length);
+    }
+    return TRUE;
+}
+
+/* -2 = EINTR, -3 = would block, -1 = fatal (including send returning zero). */
+static int send_output( int fd, const char *txt, int length )
+{
+    int n, error, flags = 0;
+#ifdef MSG_NOSIGNAL
+    flags = MSG_NOSIGNAL;
+#endif
+    n = send(fd, txt, UMIN(length, 4096), flags);
+    if ( n > 0 )
+        return n;
+    if ( n == 0 )
+        return -1;
+#ifdef WIN32
+    error = WSAGetLastError();
+#else
+    error = errno;
+#endif
+    if ( error == EINTR )
+        return -2;
+    if ( error == EWOULDBLOCK
+#ifndef WIN32
+         || error == EAGAIN
+#endif
+       )
+        return -3;
+    return -1;
+}
+
+static bool drain_output( DESCRIPTOR_DATA *d )
+{
+    if ( d->out_error )
+        return FALSE;
+    if ( d->out_epoch != output_epoch )
+    {
+        d->out_epoch = output_epoch;
+        d->out_budget = OUTPUT_BYTES;
+        d->out_calls = OUTPUT_CALLS;
+    }
+    while ( d->out_pending && d->out_budget > 0 && d->out_calls > 0 )
+    {
+        int n;
+        --d->out_calls;
+        n = send_output(d->descriptor, d->outbuf,
+                        UMIN(d->out_pending, d->out_budget));
+        if ( n > 0 )
+        {
+            d->out_pending -= n;
+            d->outtop -= n;
+            d->out_budget -= n;
+            memmove(d->outbuf, d->outbuf + n, d->outtop);
+            d->outbuf[d->outtop] = '\0';
+        }
+        else if ( n == -3 )
+            break;
+        else if ( n != -2 )
+        {
+            bug( "Output send failed on descriptor %d", d->descriptor );
+            d->out_error = TRUE;
+            return FALSE;
+        }
+    }
+    return TRUE; /* Queue ownership, NOT necessarily delivery. */
+}
+
+/*
+ * Logical close (character/list/accounting) happens immediately in close_socket.
+ * Only transport storage survives, for at most eight pulses. Forced/error/
+ * overflow closes and this deadline explicitly abort undeliverable output.
+ */
+static void finish_output_close( DESCRIPTOR_DATA *d, bool force )
+{
+    if ( force || d->out_error || !d->outtop )
+    {
+        free_desc(d);
+        return;
+    }
+    d->character = d->original = NULL;
+    d->snoop_by = d->fused_with = NULL;
+    d->idle = OUTPUT_CLOSE_PULSES;
+    d->next = closing_output;
+    closing_output = d;
+}
+
+static void drain_closed_output( void )
+{
+    DESCRIPTOR_DATA **link = &closing_output;
+    while ( *link )
+    {
+        DESCRIPTOR_DATA *d = *link;
+        bool ok = prepare_output(d) && drain_output(d);
+        if ( !ok || !d->outtop || --d->idle <= 0 )
+        {
+            if ( ok && d->outtop )
+                bug( "Output close deadline on descriptor %d", d->descriptor );
+            *link = d->next;
+            free_desc(d);
+        }
+        else
+            link = &d->next;
+    }
+}
+
+/*
+ * Normal copyover must not exec with process-local output still owned here.
+ * Use only the current pulse's remaining nonblocking budgets. Do not advance
+ * close deadlines, clear errors, or force-drop queues to make this gate pass.
+ */
+bool copyover_output_ready( void )
+{
+    DESCRIPTOR_DATA *d;
+    DESCRIPTOR_DATA **link = &closing_output;
+    bool ready = TRUE;
+
+    for ( d = first_descriptor; d; d = d->next )
+        if ( !prepare_output(d) || !drain_output(d) )
+            ready = FALSE;
+
+    while ( *link )
+    {
+        d = *link;
+        if ( !prepare_output(d) || !drain_output(d) || d->outtop )
+        {
+            ready = FALSE;
+            link = &d->next;
+        }
+        else
+        {
+            /* Successfully delivered detached transports need no inheritance. */
+            *link = d->next;
+            free_desc(d);
+        }
+    }
+
+    /* Preparing a later descriptor may have appended to an earlier snooper. */
+    for ( d = first_descriptor; d; d = d->next )
+        if ( d->out_error || d->outtop )
+            ready = FALSE;
+    return ready;
+}
+
 bool flush_buffer( DESCRIPTOR_DATA *d, bool fPrompt )
 {
-    char buf[MAX_INPUT_LENGTH];
     extern bool mud_down;
+    bool fresh;
 
-    /*
-     * If buffer has more than 4K inside, spit out .5K at a time   -Thoric
-     */
-    if ( !mud_down && d->outtop > 4096 )
-    {
-	memcpy( buf, d->outbuf, 512 );
-	d->outtop -= 512;
-	memmove( d->outbuf, d->outbuf + 512, d->outtop );
-
-
-	if ( d->snoop_by )
-	{
-	    char snoopbuf[MAX_INPUT_LENGTH];
-
-	    buf[512] = '\0';
-	    if ( d->character && d->character->name )
-	    {
-		if (d->original && d->original->name)
-		    sprintf( snoopbuf, "%s (%s)", d->character->name, d->original->name );
-		else          
-		    sprintf( snoopbuf, "%s", d->character->name);
-		write_to_buffer( d->snoop_by, snoopbuf, 0);
-	    }
-	    write_to_buffer( d->snoop_by, "% ", 2 );
-	    write_to_buffer( d->snoop_by, buf, 0 );
-	}
-        if ( d->fused_with )
-        {
-            char fusebuf[MAX_INPUT_LENGTH];
-
-            buf[512] = '\0';
-            if ( d->character && d->character->name )
-            {
-                if (d->original && d->original->name)
-                    sprintf( fusebuf, "%s (%s)", d->character->name, d->original->name );
-                else
-                    sprintf( fusebuf, "%s", d->character->name);
-                write_to_buffer( d->fused_with, fusebuf, 0);
-            }
-            write_to_buffer( d->fused_with, "% ", 2 );
-            write_to_buffer( d->fused_with, buf, 0 );
-        }
-        if ( !write_to_descriptor( d->descriptor, buf, 512 ) )
-        {
-	    d->outtop = 0;
-	    return FALSE;
-        }
-        return TRUE;
-    }
-                                                                                        
-
-    /*
-     * Bust a prompt.
-     */
-    if ( fPrompt && !mud_down && d->connected == CON_PLAYING )
+    if ( d->out_error )
+        return FALSE;
+    fresh = d->outtop > d->out_pending
+         || (d->fcommand && !d->out_prompted);
+    /* A retry of the prepared prefix must not create another prompt. */
+    if ( fPrompt && fresh && !mud_down && d->connected == CON_PLAYING )
     {
 	CHAR_DATA *ch;
 
+	d->out_prompted = TRUE;
 	ch = d->original ? d->original : d->character;
-	if ( xIS_SET(ch->act, PLR_BLANK) )
+	if ( ch && xIS_SET(ch->act, PLR_BLANK) )
 	    write_to_buffer( d, "\n\r", 2 );
-
-	    
-	if ( xIS_SET(ch->act, PLR_PROMPT))
+	if ( ch && xIS_SET(ch->act, PLR_PROMPT))
 	    display_prompt(d);
-
-	if ( xIS_SET(ch->act, PLR_TELNET_GA) )
+	if ( ch && xIS_SET(ch->act, PLR_TELNET_GA) )
 	    write_to_buffer( d, go_ahead_str, 0 );
     }
-
-    /*
-     * Short-circuit if nothing to write.
-     */
-    if ( d->outtop == 0 )
-	return TRUE;
-
-    /*
-     * Snoop-o-rama.
-     */
-    if ( d->snoop_by )
-    {
-        /* without check, 'force mortal quit' while snooped caused crash, -h */
-	if ( d->character && d->character->name )
-	{
-	    /* Show original snooped names. -- Altrag */
-	    if ( d->original && d->original->name )
-		sprintf( buf, "%s (%s)", d->character->name, d->original->name );
-	    else
-		sprintf( buf, "%s", d->character->name);
-	    write_to_buffer( d->snoop_by, buf, 0);
-	}
-	write_to_buffer( d->snoop_by, "% ", 2 );
-	write_to_buffer( d->snoop_by, d->outbuf, d->outtop );
-    }
-    if ( d->fused_with )
-    {
-        /* without check, 'force mortal quit' while snooped caused crash, -h */
-        if ( d->character && d->character->name )
-        {
-            /* Show original snooped names. -- Altrag */
-            if ( d->original && d->original->name )
-                sprintf( buf, "%s (%s)", d->character->name, d->original->name );
-            else
-                sprintf( buf, "%s", d->character->name);
-            write_to_buffer( d->fused_with, buf, 0);
-        }
-        write_to_buffer( d->fused_with, "% ", 2 );
-        write_to_buffer( d->fused_with, d->outbuf, d->outtop );
-    }
-
-    /*
-     * OS-dependent output.
-     */
-    if ( !write_to_descriptor( d->descriptor, d->outbuf, d->outtop ) )
-    {
-	d->outtop = 0;
-	return FALSE;
-    }
-    else
-    {
-	d->outtop = 0;
-	return TRUE;
-    }
+    return prepare_output(d) && drain_output(d);
 }
 
 
@@ -2031,7 +2264,7 @@ void write_to_buffer( DESCRIPTOR_DATA *d, const char *txt, int length )
     /*
      * Normally a bug... but can happen if loadup is used.
      */
-    if ( !d->outbuf )
+    if ( !d->outbuf || d->out_error )
     	return;
 
     /*
@@ -2051,86 +2284,60 @@ void write_to_buffer( DESCRIPTOR_DATA *d, const char *txt, int length )
     /*
      * Initial \n\r if needed.
      */
-    if ( d->outtop == 0 && !d->fcommand )
+    if ( d->outtop == d->out_pending && !d->fcommand )
     {
-	d->outbuf[0]	= '\n';
-	d->outbuf[1]	= '\r';
-	d->outtop	= 2;
-    }
-
-    /*
-     * Expand the buffer as needed.
-     */
-    while ( d->outtop + length >= d->outsize )
-    {
-        if (d->outsize > 32000)
-	{
-	    /* empty buffer */
-	    d->outtop = 0;
-          /* Bugfix by Samson - moved bug() call up */
-	    bug("Buffer overflow. Closing (%s).", d->character ? d->character->name : "???" );
-	    close_socket(d, TRUE);
+	if ( !queue_output(d, "\n\r", 2) )
 	    return;
- 	}
-	d->outsize *= 2;
-	RECREATE( d->outbuf, char, d->outsize );
     }
-
-    /*
-     * Copy.
-     */
-    strncpy( d->outbuf + d->outtop, txt, length );
-    d->outtop += length;
-    d->outbuf[d->outtop] = '\0';
-    return;
+    queue_output(d, txt, length);
 }
 
 
 /*
-* Lowest level output function. Write a block of text to the file descriptor.
-* If this gives errors on very long blocks (like 'ofind all'), try lowering
-* the max block size.
-*
-* Added block checking to prevent random booting of the descriptor. Thanks go
-* out to Rustry for his suggestions. -Orion
-*/
+ * Compatibility entry point. For a linked descriptor, TRUE means the bytes
+ * were accepted in order, not necessarily delivered. All output paths share
+ * its bounded queue and pulse budget. FALSE latches a transport/overflow
+ * failure; output functions never free the descriptor behind their caller.
+ *
+ * Bare-fd semantics are documented below. Queues are process-local: callers
+ * doing exec/copyover must explicitly gate exec on draining pending output.
+ */
 
 bool write_to_descriptor( int desc, char *txt, int length )
 {
-   int iStart = 0;
-   int nWrite = 0;
-   int nBlock = 0;
-   int iErr   = 0;
+    DESCRIPTOR_DATA *d;
+    int sent = 0, calls = 0;
 
-   if ( length <= 0 )
-       length = strlen(txt);
+    if ( length <= 0 )
+        length = strlen(txt);
+    for ( d = first_descriptor; d; d = d->next )
+        if ( d->descriptor == desc )
+        {
+            /* Preserve staged -> direct -> later staged ordering. */
+            if ( !prepare_output(d) || !queue_output(d, txt, length) )
+                return FALSE;
+            d->out_pending = d->outtop; /* Direct writes are not snooped. */
+            return drain_output(d);
+        }
 
-   for ( iStart = 0; iStart < length; iStart += nWrite )
-   {
-       nBlock = UMIN( length - iStart, 4096 );
-       nWrite = send( desc, txt + iStart, nBlock, 0 );
-
-       if ( nWrite == -1 )
-       {
-#ifdef WIN32
-           iErr = WSAGetLastError ();
-#else
-           iErr = errno;
-#endif
-           if ( iErr == EWOULDBLOCK )
-           {
-               nWrite = 0;
-               continue;
-           }
-           else
-           {
-               perror( "Write_to_descriptor" );
-               return FALSE;
-           }
-       }
-   }
-
-   return TRUE;
+    /*
+     * Bare fd compatibility (pre-link rejection / copyover probing):
+     * TRUE means fully sent; FALSE can mean a prefix was sent. No queue is
+     * owned for these fds, so callers must not retry the complete message.
+     * Never spin on EAGAIN, zero, or repeated EINTR.
+     */
+    while ( sent < length && calls++ < OUTPUT_CALLS && sent < OUTPUT_BYTES )
+    {
+        int n = send_output(desc, txt + sent,
+                            UMIN(length - sent, OUTPUT_BYTES - sent));
+        if ( n > 0 )
+            sent += n;
+        else if ( n == -2 ) /* interrupted; still bounded by calls */
+            continue;
+        else
+            return FALSE;
+    }
+    return sent == length;
 }
 
 
@@ -2204,6 +2411,15 @@ void check_multi( DESCRIPTOR_DATA *d , char *name )
 /*
  * Deal with sockets that haven't logged in yet.
  */
+static void auth_migrate(CHAR_DATA *ch, const char *oldhash, const char *newhash)
+{
+    if (!ch || !ch->pcdata || !*newhash ||
+        strcmp(ch->pcdata->pwd, oldhash)) return;
+    DISPOSE(ch->pcdata->pwd);
+    ch->pcdata->pwd = str_dup(newhash);
+    save_char_obj(ch);
+}
+
 void nanny( DESCRIPTOR_DATA *d, char *argument )
 {
 /*	extern int lang_array[];
@@ -2214,7 +2430,9 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
     char arg[MAX_STRING_LENGTH];
     char log_buf[MSL];
     CHAR_DATA *ch;
-    char *pwdnew;
+    char pwdnew[PASSWORD_HASH_SIZE];
+    int auth_result;
+    char auth_old[PASSWORD_HASH_SIZE], auth_new[PASSWORD_HASH_SIZE];
     char *p;
     int iRace;
     bool fOld, chk;
@@ -2222,7 +2440,10 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
   iRace = 0;
 /*    while ( isspace(*argument) )
 	argument++;*/
-    if( d->connected != CON_NOTE_TEXT )
+    if( d->connected != CON_NOTE_TEXT &&
+        d->connected != CON_GET_OLD_PASSWORD &&
+        d->connected != CON_GET_NEW_PASSWORD &&
+        d->connected != CON_CONFIRM_NEW_PASSWORD )
     {
         while ( isspace(*argument) )
             argument++;
@@ -2271,6 +2492,7 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
       	      {
                 send_to_desc_color( "&RThe MUD is currently preparing for a reboot.\n\rNew players are not accepted during this time.\n\rPlease try again in a few minutes.\n\r", d);
 		close_socket( d, FALSE );
+                return;
               }
               send_to_desc_color( "\n\r&zChoosing a name is one of the most important parts of this game...\n\rMake sure to pick a name appropriate to the character you are going\n\rto role play, and be sure that it suits a &WDBZ Theme&z.\n\rIf the name you select is not acceptable, you will be asked to choose\n\ranother one.\n\r\n\rPlease choose a &WName&z for your character:&w\n\r", d);
 	      d->newstate++;
@@ -2412,10 +2634,15 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	break;
 
     case CON_GET_OLD_PASSWORD:
+        if (!auth_attempt(d->descriptor, ch->pcdata->filename)) {
+            send_to_desc_color("Authentication temporarily busy. Try again later.\n\rPassword: ", d);
+            return;
+        }
+        auth_result = password_verify(argument, ch->pcdata->pwd);
 	send_to_desc_color( "\n\r", d );
 
 
-        if ( strcmp( crypt( argument, ch->pcdata->pwd ), ch->pcdata->pwd ) )
+        if (!auth_result)
         {
 	    send_to_desc_color( "&RWrong password.\n\r", d );
 	    /* clear descriptor pointer to get rid of bug message in log */
@@ -2427,8 +2654,23 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 
 //	write_to_buffer( d, echo_on_str, 0 );
 
-	if ( check_playing( d, ch->pcdata->filename, TRUE ) )
+        auth_new[0] = '\0';
+        strcpy(auth_old, ch->pcdata->pwd);
+        if (auth_result == 3)
+            send_to_desc_color("Legacy password verifies only eight bytes. Use password to set a new 12-128 byte password.\n\r", d);
+        if (auth_result == 4)
+            send_to_desc_color("Legacy password exceeds the new 128-byte limit. Use password to explicitly change it.\n\r", d);
+        if (auth_result == 2 &&
+            (!auth_attempt(d->descriptor, ch->pcdata->filename) ||
+             !password_hash(argument, auth_new))) {
+            auth_new[0] = '\0';
+            send_to_desc_color("Password upgrade deferred; sign in again later or use password.\n\r", d);
+        }
+	if ( check_playing( d, ch->pcdata->filename, TRUE ) ) {
+            if (d->connected == CON_PLAYING || d->connected == CON_EDITING)
+                auth_migrate(d->character, auth_old, auth_new);
 	    return;
+        }
 
 	chk = check_reconnect( d, ch->pcdata->filename, TRUE );
 	if ( chk == BERR )
@@ -2438,16 +2680,19 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	    close_socket( d, FALSE );
 	    return;
 	}
-	if ( chk == TRUE )
+	if ( chk == TRUE ) {
+          auth_migrate(d->character, auth_old, auth_new);
 	  return;
+        }
 
         check_multi( d, ch->name );
-	sprintf( buf, ch->pcdata->filename );
+snprintf( buf, sizeof(buf), "%s", ch->pcdata->filename );
 	d->character->desc = NULL;
 	free_char( d->character );
 	d->character = NULL;
 	fOld = load_char_obj( d, buf, FALSE, FALSE );
 	ch = d->character;
+        if (fOld) auth_migrate(ch, auth_old, auth_new);
         if ( ch->position ==  POS_FIGHTING )
 		ch->position = POS_STANDING;
 
@@ -2468,7 +2713,7 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	switch ( *argument )
 	{
 	case 'y': case 'Y':
-	    sprintf( buf, "\n\r&zMake sure to use a password that won't be easily guessed by someone else."
+    sprintf( buf, "\n\r&zUse a password of 12 to 128 bytes that is not easily guessed."
 	    		  "\n\r&zPick a good password for &W%s&z: %s",
 		ch->name, echo_off_str );
 	    send_to_desc_color( buf, d );
@@ -2493,9 +2738,9 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
     case CON_GET_NEW_PASSWORD:
 	send_to_desc_color( "\n\r", d );
 
-	if ( strlen(argument) < 5 )
+if (!password_new_valid(argument))
 	{
-	    send_to_desc_color( "Password must be at least five characters long.\n\rPassword: ", d);
+    send_to_desc_color( "Password must be 12 to 128 bytes.\n\rPassword: ", d);
 	    return;
 	}
 
@@ -2504,7 +2749,10 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	  send_to_char( "New password cannot begin with the '!' character.",ch);
 	  return;
 	 }
-        pwdnew = crypt( argument, ch->name );
+        if (!auth_attempt(d->descriptor, ch->name) || !password_hash(argument, pwdnew)) {
+            send_to_desc_color("Password creation unavailable; try again later.\n\rPassword: ", d);
+            return;
+        }
 	for ( p = pwdnew; *p != '\0'; p++ )
 	{
 	    if ( *p == '~' )
@@ -2521,9 +2769,13 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	break;
 
     case CON_CONFIRM_NEW_PASSWORD:
+        if (!auth_attempt(d->descriptor, ch->name)) {
+            send_to_desc_color("Authentication temporarily busy. Try again later.\n\rConfirm password: ", d);
+            return;
+        }
 	send_to_desc_color("\n\r", d );
 
-        if ( strcmp( crypt( argument, ch->pcdata->pwd ), ch->pcdata->pwd ) )
+        if (!password_verify(argument, ch->pcdata->pwd))
         {
             send_to_desc_color( "Passwords don't match.\n\rRetype password: ", d);
             d->connected = CON_GET_NEW_PASSWORD;
@@ -4180,8 +4432,10 @@ bool pager_output( DESCRIPTOR_DATA *d )
   register int lines;
   bool ret;
 
-  if ( !d || !d->pagepoint || d->pagecmd == -1 )
+  if ( !d || !d->pagepoint )
     return TRUE;
+  if ( d->pagecmd == -1 )
+    return flush_buffer(d, FALSE);
   ch = d->original ? d->original : d->character;
   pclines = UMAX(ch->pcdata->pagerlen, 5) - 1;
   switch(LOWER(d->pagecmd))
@@ -4202,12 +4456,12 @@ bool pager_output( DESCRIPTOR_DATA *d )
   case 'q':
     d->pagetop = 0;
     d->pagepoint = NULL;
-    flush_buffer(d, TRUE);
+    ret = flush_buffer(d, TRUE);
     DISPOSE(d->pagebuf);
     d->pagesize = MAX_STRING_LENGTH;
-    return TRUE;
+    return ret;
   }
-  while ( lines < 0 && d->pagepoint >= d->pagebuf )
+  while ( lines < 0 && d->pagepoint > d->pagebuf )
     if ( *(--d->pagepoint) == '\n' )
       ++lines;
   if ( *d->pagepoint == '\n' && *(++d->pagepoint) == '\r' )
@@ -4234,10 +4488,10 @@ bool pager_output( DESCRIPTOR_DATA *d )
   {
     d->pagetop = 0;
     d->pagepoint = NULL;
-    flush_buffer(d, TRUE);
+    ret = flush_buffer(d, TRUE);
     DISPOSE(d->pagebuf);
     d->pagesize = MAX_STRING_LENGTH;
-    return TRUE;
+    return ret;
   }
   d->pagecmd = -1;
    if( xIS_SET( ch->act, PLR_ANSI ) )
@@ -4253,7 +4507,7 @@ bool pager_output( DESCRIPTOR_DATA *d )
 	sprintf( buf, "%s", color_str( d->pagecolor, ch ) );
       ret = write_to_descriptor( d->descriptor, buf, 0 );
   }
-  return ret;
+  return ret && flush_buffer(d, FALSE);
 }
 
 

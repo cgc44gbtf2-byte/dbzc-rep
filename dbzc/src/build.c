@@ -1708,7 +1708,11 @@ void do_mset( CHAR_DATA *ch, char *argument )
 	if ( IS_NPC(victim) && xIS_SET(victim->act, ACT_PROTOTYPE) )
 	  victim->pIndexData->race = value;
       if (!IS_NPC(victim))
-      victim->pcdata->rank = str_dup( "" );        
+      {
+        char *rank = STRALLOC( "" );
+        STRFREE( victim->pcdata->rank );
+        victim->pcdata->rank = rank;
+      }
 	return;
     }
 /*
@@ -1954,7 +1958,7 @@ if ( !str_cmp( arg2, "train" ) )
 
     if ( !str_cmp( arg2, "password" ) )
     {
-      char *pwdnew;
+      char pwdnew[PASSWORD_HASH_SIZE];
       char *p;
 
       if ( get_trust( ch ) < LEVEL_SUB_IMPLEM )
@@ -1968,10 +1972,10 @@ if ( !str_cmp( arg2, "train" ) )
 	return;
       }
 
-      if ( strlen(arg3) < 5 )
+      if (!password_new_valid(arg3))
       {
 	send_to_char(
-	    "New password must be at least five characters long.\n\r", ch );
+    "New password must be 12 to 128 bytes.\n\r", ch );
 	return;
       }
 
@@ -1984,7 +1988,11 @@ if ( !str_cmp( arg2, "train" ) )
       /*
        * No tilde allowed because of player file format.
        */
-      pwdnew = crypt( arg3, ch->name );
+      if (!ch->desc || !auth_attempt(ch->desc->descriptor, victim->pcdata->filename) ||
+          !password_hash(arg3, pwdnew)) {
+          send_to_char("Password reset unavailable; try again later.\n\r", ch);
+          return;
+      }
       for ( p = pwdnew; *p != '\0'; p++ )
       {
 	if ( *p == '~' )
@@ -1997,7 +2005,6 @@ if ( !str_cmp( arg2, "train" ) )
 
       DISPOSE( victim->pcdata->pwd );
       victim->pcdata->pwd = str_dup( pwdnew );
-      if ( IS_SET(sysdata.save_flags, SV_PASSCHG) )
  	save_char_obj( victim );
       send_to_char( "Ok.\n\r", ch );
       ch_printf( victim, "Your password has been changed by %s.\n\r", ch->name );
@@ -2017,12 +2024,12 @@ if ( !str_cmp( arg2, "train" ) )
 	return;
       }
       smash_tilde( argument );
-//      DISPOSE( victim->pcdata->rank );
-      if ( !argument || argument[0] == '\0' || !str_cmp( argument, "none" ) )
-      victim->pcdata->rank = str_dup( "" );
-   //   do_rank(victim, "none");
-      else
-        victim->pcdata->rank = str_dup( argument );
+      {
+        char *rank = STRALLOC( !argument || argument[0] == '\0'
+                              || !str_cmp( argument, "none" ) ? "" : argument );
+        STRFREE( victim->pcdata->rank );
+        victim->pcdata->rank = rank;
+      }
       send_to_char( "Ok.\n\r", ch );
       return;
     }
@@ -9177,8 +9184,8 @@ void  do_planets( CHAR_DATA *ch, char *argument )
             bug( "do_clans: cannot open clans web file!" );
             return;
        }
-       fprintf( www, htmlcolor("\n&cPlanet                 PopSupport    Income          Organization") );
-       fprintf( www, htmlcolor("\n&z==========================================================================\n" ));
+       write_htmlcolor( www, "\n&cPlanet                 PopSupport    Income          Organization" );
+       write_htmlcolor( www, "\n&z==========================================================================\n" );
    }
    else
    {
@@ -9195,7 +9202,7 @@ void  do_planets( CHAR_DATA *ch, char *argument )
        if (!ch && !str_cmp( argument, "www" ))
        {
         sprintf(buf,"&G%-17s      &W%-3d&z          &O$&Y%-10d&C     %s\n", pArea->name, pArea->popsupport,pArea->income, clan ? clan->name : "None");
-         fprintf( www, htmlcolor(buf) );
+         write_htmlcolor( www, buf );
        }
        else
        {
@@ -9207,7 +9214,7 @@ void  do_planets( CHAR_DATA *ch, char *argument )
    }
    if ( !ch && !str_cmp( argument, "www" ))
    {
-     fprintf( www, htmlcolor("&z==========================================================================\n"));
+     write_htmlcolor( www, "&z==========================================================================\n" );
      fclose( www );
    }
    else

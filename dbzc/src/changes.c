@@ -475,10 +475,10 @@ void do_changes(CHAR_DATA *ch, char *argument)
           return;
        }
        sprintf( buf2, "&w-&W<&z( &YDragonball Z: Chronicles Changelog &z)&W>&w-" );
-       fprintf( www, "%s", htmlcolor (centertext( buf2, 75 )));
-       fprintf( www, htmlcolor("\n&z---------------------------------------------------------------------------") );
-       fprintf( www, htmlcolor("\n&RNo.    Date          Change\n") );
-       fprintf( www, htmlcolor("&z---------------------------------------------------------------------------\n") );
+       write_htmlcolor( www, centertext( buf2, 75 ) );
+       write_htmlcolor( www, "\n&z---------------------------------------------------------------------------" );
+       write_htmlcolor( www, "\n&RNo.    Date          Change\n" );
+       write_htmlcolor( www, "&z---------------------------------------------------------------------------\n" );
     }
 
     for ( i = 0; i < maxChanges; i++)
@@ -509,7 +509,7 @@ void do_changes(CHAR_DATA *ch, char *argument)
                      changes_table[i].date,
                      changes_table[i].change );
                      //change_justify( changes_table[i].change, 55 ));
-           fprintf( www, htmlcolor( buf ) );
+           write_htmlcolor( www, buf );
         }    
 
         if ( ch )
@@ -528,10 +528,10 @@ void do_changes(CHAR_DATA *ch, char *argument)
     sprintf(buf, "&cThere is a total of &w%3d &cchanges in the database.\n\r", maxChanges);
     if ( !ch )
     {
-      fprintf( www, htmlcolor("&z---------------------------------------------------------------------------\n"));
-      fprintf( www, htmlcolor(buf) );
-      fprintf( www, htmlcolor("&cAlso see: &z'&wchanges all&z'&c for a list of all the changes.&z\n"));
-      fprintf( www, htmlcolor("&z---------------------------------------------------------------------------\n" ));
+      write_htmlcolor( www, "&z---------------------------------------------------------------------------\n" );
+      write_htmlcolor( www, buf );
+      write_htmlcolor( www, "&cAlso see: &z'&wchanges all&z'&c for a list of all the changes.&z\n" );
+      write_htmlcolor( www, "&z---------------------------------------------------------------------------\n" );
       fclose( www );
     }
     if ( ch )

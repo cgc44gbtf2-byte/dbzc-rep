@@ -78,7 +78,6 @@ extern char *const map_names[];
 extern char *const map_name[];
 extern char *const continents[];
 extern char *const sect_types[];
-extern const struct sect_color_type sect_show[];
 
 typedef struct entrance_data ENTRANCE_DATA;
 typedef struct landmark_data LANDMARK_DATA;
@@ -146,6 +145,8 @@ struct sect_color_type
    short graph2;
    short graph3;
 };
+
+extern const struct sect_color_type sect_show[];
 
 typedef enum
 {

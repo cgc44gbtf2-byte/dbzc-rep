@@ -834,6 +834,12 @@ void load_obj_files( void )
    log_string( "World state: loading objs" );
    sprintf( directory_name, "%s", COPYOVER_DIR );
    dp = opendir( directory_name );
+   if ( !dp )
+   {
+      perror( directory_name );
+      bug( "Load_obj_files: cannot open optional world object directory %s; skipping object restore. Run scripts/preflight.sh before startup.", directory_name );
+      return;
+   }
    dentry = readdir( dp );
    while ( dentry )
    {

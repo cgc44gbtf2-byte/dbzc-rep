@@ -412,6 +412,7 @@ void pfile_scan( bool count )
 
   sh_int alpha_loop;
   sh_int cou = 0;
+  sh_int missing_dirs = 0;
   deleted = 0;
   clear_race_count();
   clear_sex_count();
@@ -432,6 +433,13 @@ void pfile_scan( bool count )
       snprintf( directory_name, 100, "%s%c", PLAYER_DIR, 'a' + alpha_loop );
       /* log_string( directory_name ); */
       dp = opendir( directory_name );
+      if ( !dp )
+      {
+         perror( directory_name );
+         bug( "Pfile_scan: cannot open %s; skipping directory. Run scripts/preflight.sh before startup.", directory_name );
+         missing_dirs++;
+         continue;
+      }
       dentry = readdir( dp );
       while ( dentry )
       {
@@ -452,7 +460,14 @@ void pfile_scan( bool count )
       closedir( dp );
   }
 
-  if( !count )
+  if ( missing_dirs )
+  {
+    snprintf( log_buf, MAX_STRING_LENGTH,
+              "Pfile scan incomplete: %d player directories unavailable; totals cover readable directories only.",
+              missing_dirs );
+    log_string( log_buf );
+  }
+  else if( !count )
     log_string( "Pfile cleanup completed." );
   else
     log_string( "Pfile count completed." );

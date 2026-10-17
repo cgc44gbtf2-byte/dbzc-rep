@@ -54,3 +54,7 @@ jobs:
         run: timeout 120s python3 tests/copyover_records.py
       - name: Test rank string ownership with sanitizers
         run: timeout 120s python3 tests/rank_ownership.py
+      - name: Test reserve FILE lifecycle with sanitizers
+        run: timeout 120s python3 tests/reserve_lifecycle.py
+      - name: Test runtime directory guards and provisioning
+        run: timeout 120s python3 tests/runtime_dirs.py

@@ -4420,7 +4420,12 @@ void show_file( CHAR_DATA *ch, char *filename )
     int c;
     int num = 0;
 
-    fclose( fpReserve );
+    if ( fpReserve )
+    {
+	if ( fclose( fpReserve ) != 0 )
+	    bug( "show_file: fclose reserve" );
+	fpReserve = NULL;
+    }
     if ( (fp = fopen( filename, "r" )) != NULL )
     {
       while ( !feof(fp) )
@@ -4443,7 +4448,12 @@ void show_file( CHAR_DATA *ch, char *filename )
        *  This out. */
       fclose(fp);
     }
-    fpReserve = fopen( NULL_FILE, "r" );
+    if ( ( fpReserve = fopen( NULL_FILE, "r" ) ) == NULL )
+    {
+	bug( "show_file: FATAL: unable to reopen reserve" );
+	perror( NULL_FILE );
+	exit( EXIT_FAILURE );
+    }
 }
 
 /*
@@ -4637,10 +4647,15 @@ void make_wizlist( )
   EXT_BV iflags;
   WIZENT *wiz, *wiznext;
   char buf[MAX_STRING_LENGTH];
+  dp = opendir( GOD_DIR );
+  if ( !dp )
+  {
+    perror( GOD_DIR );
+    bug( "Make_wizlist: cannot open %s; keeping existing wizlist. Run scripts/preflight.sh before startup.", GOD_DIR );
+    return;
+  }
   first_wiz = NULL;
   last_wiz  = NULL;
-
-  dp = opendir( GOD_DIR );
 
   ilevel = 0;
   dentry = readdir( dp );
@@ -6357,6 +6372,12 @@ void load_buildlist( void )
 	char temp;
 	
 	dp = opendir( GOD_DIR );
+	if ( !dp )
+	{
+		perror( GOD_DIR );
+		bug( "Load_buildlist: cannot open %s; skipping builder scan. Run scripts/preflight.sh before startup.", GOD_DIR );
+		return;
+	}
 	dentry = readdir( dp );
 	while ( dentry )
 	{
@@ -6726,7 +6747,12 @@ void save_sysdata( SYSTEM_DATA sys )
     sh_int z;
     sprintf( filename, "%ssysdata.dat", SYSTEM_DIR );
     
-    fclose( fpReserve );
+    if ( fpReserve )
+    {
+	if ( fclose( fpReserve ) != 0 )
+	    bug( "save_sysdata: fclose reserve" );
+	fpReserve = NULL;
+    }
     if ( ( fp = fopen( filename, "w" ) ) == NULL )
     {
     	bug( "save_sysdata: fopen" );
@@ -6787,9 +6813,19 @@ void save_sysdata( SYSTEM_DATA sys )
         fprintf(fp, "Pfile_count     %d\n", sys.pfile_count); 
         fprintf( fp, "End\n\n" );
         fprintf( fp, "#END\n" );
-        fclose( fp );
+        if ( fclose( fp ) != 0 )
+        {
+            bug( "save_sysdata: fclose" );
+            perror( filename );
+        }
         fp = NULL;
    }
+    if ( ( fpReserve = fopen( NULL_FILE, "r" ) ) == NULL )
+    {
+        bug( "save_sysdata: FATAL: unable to reopen reserve" );
+        perror( NULL_FILE );
+        exit( EXIT_FAILURE );
+    }
    return;
 }
 

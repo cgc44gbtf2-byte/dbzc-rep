@@ -1,4 +1,4 @@
-# Maintenance batches 1–3
+# Maintenance batches 1–4
 
 This branch is a development baseline, **not a production security clearance**.
 
@@ -20,6 +20,19 @@ sudo apt-get install --no-install-recommends build-essential libcrypt-dev python
 make -C dbzc/src -j4
 ```
 
+Before startup, run preflight **as the game service account**, not root:
+
+```sh
+sh scripts/preflight.sh
+sh scripts/preflight.sh --check
+# Start the server from dbzc/area, not the repository root.
+```
+
+Preflight validates mandatory world/list/table/map data, then creates missing
+runtime directories with mode 0750. It preserves existing data and permissions.
+It accepts an optional deployment path, including paths containing spaces.
+It does not start the server, install packages, or invent missing world data.
+
 The Makefile explicitly uses GNU89 and `-fcommon` for the legacy source's
 tentative shared globals. These are compatibility settings, not a modernization
 of those globals. The duplicate wear enum slot was renamed rather than removed
@@ -40,6 +53,8 @@ sh tests/web_output_test.sh
 python3 tests/output_queue.py
 python3 tests/copyover_records.py
 python3 tests/rank_ownership.py
+python3 tests/reserve_lifecycle.py
+python3 tests/runtime_dirs.py
 git diff --check
 ```
 
@@ -62,6 +77,10 @@ load/mutation/free paths, checking reference counts, aliased input, repeated
 loads, shared values, rank commands, demotion, race changes and clearing.
 Copyover tests exercise the actual bounded parser/writers, restored string
 ownership, legacy records, malformed input, socket cleanup and error handling.
+Reserve tests use actual FILE streams and extracted save/show/cleanup code,
+including repeated saves, open/close failures and fail-closed reserve recovery.
+Directory tests exercise production guards and preflight against copied data,
+including missing/inaccessible directories and nondestructive provisioning.
 
 These focused tests run with ASan/UBSan and leak detection; they do not establish
 that the whole server is free of leaks or memory corruption.
@@ -87,6 +106,12 @@ that the whole server is free of leaks or memory corruption.
   replacement and cleanup, including commands and repeated player-file fields.
 - Share a bounded, versioned copyover writer between normal/emergency paths;
   restore owned client strings and close unclaimed inherited client sockets.
+- Restore the reserve FILE after system saves on both success and failure;
+  clear closed pointers and stop with a fatal diagnostic if reopening fails,
+  rather than passing an invalid stream to legacy callers.
+- Guard directory reads in wizlist, builder-list, player-file scan and copyover
+  object restoration. Unavailable optional scans are diagnosed and skipped;
+  player scans explicitly report incomplete totals.
 
 ### Copyover record compatibility
 
@@ -122,9 +147,23 @@ by the existing timeout policy.
 ## Verification and remaining work
 
 The full executable compiled and linked with GCC 15.3.0 and libxcrypt 4.4.38.
-All five focused regression suites passed locally with sanitizers. Legacy compiler warnings
-remain. No public listener was started, no game-world boot/login test was run,
-and no whole-server memory profiling was performed.
+All seven focused regression suites passed locally with sanitizers. Legacy
+compiler warnings remain.
+
+Batch 4 additionally passed two independent, fresh-copy live tests in an
+isolated Linux user/network namespace. Each used the bundled world data and
+preflight, retained automatic cleanup, logged in a synthetic administrator,
+ran two explicit player scans (repeated system saves), executed real
+`copyover now`, and verified `look` on the same TCP connection afterward.
+The MUD name remained intact before and after exec. No debugger or reused
+configuration was used in these two runs. All test processes were stopped.
+
+Those live tests ran in the local Linux environment, not the Ubuntu/Debian CI
+containers. CI runs full builds and the seven focused suites. No public
+listener, production deployment or whole-server memory profile was performed.
+Existing world-data reset warnings, a missing relax skill and absent clan
+vault files remain. Multi-player/load/soak and emergency-crash testing remain
+necessary before a production readiness claim.
 
 Still pending from the review:
 

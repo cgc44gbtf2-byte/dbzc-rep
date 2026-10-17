@@ -1958,7 +1958,7 @@ if ( !str_cmp( arg2, "train" ) )
 
     if ( !str_cmp( arg2, "password" ) )
     {
-      char *pwdnew;
+      char pwdnew[PASSWORD_HASH_SIZE];
       char *p;
 
       if ( get_trust( ch ) < LEVEL_SUB_IMPLEM )
@@ -1972,10 +1972,10 @@ if ( !str_cmp( arg2, "train" ) )
 	return;
       }
 
-      if ( strlen(arg3) < 5 )
+      if (!password_new_valid(arg3))
       {
 	send_to_char(
-	    "New password must be at least five characters long.\n\r", ch );
+    "New password must be 12 to 128 bytes.\n\r", ch );
 	return;
       }
 
@@ -1988,7 +1988,11 @@ if ( !str_cmp( arg2, "train" ) )
       /*
        * No tilde allowed because of player file format.
        */
-      pwdnew = crypt( arg3, ch->name );
+      if (!ch->desc || !auth_attempt(ch->desc->descriptor, victim->pcdata->filename) ||
+          !password_hash(arg3, pwdnew)) {
+          send_to_char("Password reset unavailable; try again later.\n\r", ch);
+          return;
+      }
       for ( p = pwdnew; *p != '\0'; p++ )
       {
 	if ( *p == '~' )
@@ -2001,7 +2005,6 @@ if ( !str_cmp( arg2, "train" ) )
 
       DISPOSE( victim->pcdata->pwd );
       victim->pcdata->pwd = str_dup( pwdnew );
-      if ( IS_SET(sysdata.save_flags, SV_PASSCHG) )
  	save_char_obj( victim );
       send_to_char( "Ok.\n\r", ch );
       ch_printf( victim, "Your password has been changed by %s.\n\r", ch->name );

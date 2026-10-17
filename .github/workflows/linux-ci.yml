@@ -32,7 +32,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential libcrypt-dev python3 git ca-certificates
+            build-essential libcrypt-dev libargon2-dev python3 git ca-certificates
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -58,3 +58,5 @@ jobs:
         run: timeout 120s python3 tests/reserve_lifecycle.py
       - name: Test runtime directory guards and provisioning
         run: timeout 120s python3 tests/runtime_dirs.py
+      - name: Test password security and authentication throttling
+        run: timeout 120s python3 tests/auth.py

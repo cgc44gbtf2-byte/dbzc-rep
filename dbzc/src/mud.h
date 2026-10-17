@@ -29,6 +29,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
+#include "password_auth.h"
+#include "auth_rate.h"
 
 /* force the who command to require an argument (should use cset) */
 // #define REQWHOARG
@@ -37,7 +39,7 @@
   #include <winsock.h>
   #include <sys/types.h>
   #pragma warning( disable: 4018 4244 4761)
-  #define NOCRYPT
+  #error "Secure password authentication requires Linux and libargon2"
   #define index strchr
   #define rindex strrchr
 #else
@@ -4335,10 +4337,10 @@ char *	crypt		args( ( const char *key, const char *salt ) );
  * In particular, the U.S. Government prohibits its export from the
  * United States to foreign countries.
  *
- * Turn on NOCRYPT to keep passwords in plain text.
+ * NOCRYPT is no longer supported: authentication always requires secure hashes.
  */
 #if	defined(NOCRYPT)
-#define crypt(s1, s2)	(s1)
+#error "NOCRYPT is insecure and unsupported"
 #endif
 
 

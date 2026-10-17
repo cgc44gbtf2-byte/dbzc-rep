@@ -4450,85 +4450,43 @@ void do_wimpy( CHAR_DATA *ch, char *argument )
 
 void do_password( CHAR_DATA *ch, char *argument )
 {
+    char current[MAX_INPUT_LENGTH];
     char arg1[MAX_INPUT_LENGTH];
     char arg2[MAX_INPUT_LENGTH];
     char log_buf[MAX_STRING_LENGTH];
-    char *pArg;
-    char *pwdnew;
+    const char *tokens = argument;
+    char pwdnew[PASSWORD_HASH_SIZE];
     char *p;
-    char cEnd;
 
     if ( IS_NPC(ch) )
 	return;
 
-    /*
-     * Can't use one_argument here because it smashes case.
-     * So we just steal all its code.  Bleagh.
-     */
-    pArg = arg1;
-    while ( isspace(*argument) )
-	argument++;
-
-    cEnd = ' ';
-    if ( *argument == '\'' || *argument == '"' )
-	cEnd = *argument++;
-
-    while ( *argument != '\0' )
+    if (!password_token(&tokens, current, sizeof(current)) ||
+        !password_token(&tokens, arg1, sizeof(arg1)) ||
+        !password_token(&tokens, arg2, sizeof(arg2)) || *tokens)
     {
-	if ( *argument == cEnd )
-	{
-	    argument++;
-	    break;
-	}
-	*pArg++ = *argument++;
-    }
-    *pArg = '\0';
-
-    pArg = arg2;
-    while ( isspace(*argument) )
-	argument++;
-
-    cEnd = ' ';
-    if ( *argument == '\'' || *argument == '"' )
-	cEnd = *argument++;
-
-    while ( *argument != '\0' )
-    {
-	if ( *argument == cEnd )
-	{
-	    argument++;
-	    break;
-	}
-	*pArg++ = *argument++;
-    }
-    *pArg = '\0';
-
-    if ( arg1[0] == '\0' || arg2[0] == '\0' )
-    {
-	send_to_char( "Syntax: password <new> <again>.\n\r", ch );
-	send_to_char( "Syntax: password <new> <again>.\n\r", ch );
+send_to_char( "Syntax: password <current> <new> <again> (new: 12-128 bytes).\n\r", ch );
 	return;
     }
-
-/*
-    if ( strcmp( crypt( arg1, ch->pcdata->pwd ), ch->pcdata->pwd ) )
-    {
-	WAIT_STATE( ch, 40 );
-	send_to_char( "Wrong password.  Wait 10 seconds.\n\r", ch );
-	return;
-    }
-*/
 
 /* This should stop all the mistyped password problems --Shaddai */
+    if (!ch->desc || !auth_attempt(ch->desc->descriptor, ch->pcdata->filename)) {
+        send_to_char("Authentication temporarily busy. Try again later.\n\r", ch);
+        return;
+    }
+    if (!password_verify(current, ch->pcdata->pwd)) {
+        send_to_char("Wrong current password.\n\r", ch);
+        return;
+    }
     if ( strcmp( arg1, arg2 ))
     {
 	send_to_char("Passwords don't match try again.\n\r", ch );
 	return;
     }
-    if ( strlen(arg2) < 5 )
+    if (!password_new_valid(arg2))
     {
 	send_to_char(
-	    "New password must be at least five characters long.\n\r", ch );
+    "New password must be 12 to 128 bytes.\n\r", ch );
 	return;
     }
 
@@ -4541,7 +4499,11 @@ void do_password( CHAR_DATA *ch, char *argument )
     /*
      * No tilde allowed because of player file format.
      */
-    pwdnew = crypt( arg2, ch->name );
+    if (!ch->desc || !auth_attempt(ch->desc->descriptor, ch->pcdata->filename) ||
+        !password_hash(arg2, pwdnew)) {
+        send_to_char("Password change unavailable; try again later.\n\r", ch);
+        return;
+    }
     for ( p = pwdnew; *p != '\0'; p++ )
     {
 	if ( *p == '~' )
@@ -4554,7 +4516,6 @@ void do_password( CHAR_DATA *ch, char *argument )
 
     DISPOSE( ch->pcdata->pwd );
     ch->pcdata->pwd = str_dup( pwdnew );
-    if ( IS_SET(sysdata.save_flags, SV_PASSCHG) )
 	save_char_obj( ch );
     if ( ch->desc && ch->desc->host[0]  != '\0' )
        sprintf(log_buf, "%s changing password from site %s\n", ch->name, 

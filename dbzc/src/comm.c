@@ -2354,6 +2354,15 @@ void check_multi( DESCRIPTOR_DATA *d , char *name )
 /*
  * Deal with sockets that haven't logged in yet.
  */
+static void auth_migrate(CHAR_DATA *ch, const char *oldhash, const char *newhash)
+{
+    if (!ch || !ch->pcdata || !*newhash ||
+        strcmp(ch->pcdata->pwd, oldhash)) return;
+    DISPOSE(ch->pcdata->pwd);
+    ch->pcdata->pwd = str_dup(newhash);
+    save_char_obj(ch);
+}
+
 void nanny( DESCRIPTOR_DATA *d, char *argument )
 {
 /*	extern int lang_array[];
@@ -2364,7 +2373,9 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
     char arg[MAX_STRING_LENGTH];
     char log_buf[MSL];
     CHAR_DATA *ch;
-    char *pwdnew;
+    char pwdnew[PASSWORD_HASH_SIZE];
+    int auth_result;
+    char auth_old[PASSWORD_HASH_SIZE], auth_new[PASSWORD_HASH_SIZE];
     char *p;
     int iRace;
     bool fOld, chk;
@@ -2372,7 +2383,10 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
   iRace = 0;
 /*    while ( isspace(*argument) )
 	argument++;*/
-    if( d->connected != CON_NOTE_TEXT )
+    if( d->connected != CON_NOTE_TEXT &&
+        d->connected != CON_GET_OLD_PASSWORD &&
+        d->connected != CON_GET_NEW_PASSWORD &&
+        d->connected != CON_CONFIRM_NEW_PASSWORD )
     {
         while ( isspace(*argument) )
             argument++;
@@ -2563,10 +2577,15 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	break;
 
     case CON_GET_OLD_PASSWORD:
+        if (!auth_attempt(d->descriptor, ch->pcdata->filename)) {
+            send_to_desc_color("Authentication temporarily busy. Try again later.\n\rPassword: ", d);
+            return;
+        }
+        auth_result = password_verify(argument, ch->pcdata->pwd);
 	send_to_desc_color( "\n\r", d );
 
 
-        if ( strcmp( crypt( argument, ch->pcdata->pwd ), ch->pcdata->pwd ) )
+        if (!auth_result)
         {
 	    send_to_desc_color( "&RWrong password.\n\r", d );
 	    /* clear descriptor pointer to get rid of bug message in log */
@@ -2578,8 +2597,23 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 
 //	write_to_buffer( d, echo_on_str, 0 );
 
-	if ( check_playing( d, ch->pcdata->filename, TRUE ) )
+        auth_new[0] = '\0';
+        strcpy(auth_old, ch->pcdata->pwd);
+        if (auth_result == 3)
+            send_to_desc_color("Legacy password verifies only eight bytes. Use password to set a new 12-128 byte password.\n\r", d);
+        if (auth_result == 4)
+            send_to_desc_color("Legacy password exceeds the new 128-byte limit. Use password to explicitly change it.\n\r", d);
+        if (auth_result == 2 &&
+            (!auth_attempt(d->descriptor, ch->pcdata->filename) ||
+             !password_hash(argument, auth_new))) {
+            auth_new[0] = '\0';
+            send_to_desc_color("Password upgrade deferred; sign in again later or use password.\n\r", d);
+        }
+	if ( check_playing( d, ch->pcdata->filename, TRUE ) ) {
+            if (d->connected == CON_PLAYING || d->connected == CON_EDITING)
+                auth_migrate(d->character, auth_old, auth_new);
 	    return;
+        }
 
 	chk = check_reconnect( d, ch->pcdata->filename, TRUE );
 	if ( chk == BERR )
@@ -2589,8 +2623,10 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	    close_socket( d, FALSE );
 	    return;
 	}
-	if ( chk == TRUE )
+	if ( chk == TRUE ) {
+          auth_migrate(d->character, auth_old, auth_new);
 	  return;
+        }
 
         check_multi( d, ch->name );
 	sprintf( buf, ch->pcdata->filename );
@@ -2599,6 +2635,7 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	d->character = NULL;
 	fOld = load_char_obj( d, buf, FALSE, FALSE );
 	ch = d->character;
+        if (fOld) auth_migrate(ch, auth_old, auth_new);
         if ( ch->position ==  POS_FIGHTING )
 		ch->position = POS_STANDING;
 
@@ -2619,7 +2656,7 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	switch ( *argument )
 	{
 	case 'y': case 'Y':
-	    sprintf( buf, "\n\r&zMake sure to use a password that won't be easily guessed by someone else."
+    sprintf( buf, "\n\r&zUse a password of 12 to 128 bytes that is not easily guessed."
 	    		  "\n\r&zPick a good password for &W%s&z: %s",
 		ch->name, echo_off_str );
 	    send_to_desc_color( buf, d );
@@ -2644,9 +2681,9 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
     case CON_GET_NEW_PASSWORD:
 	send_to_desc_color( "\n\r", d );
 
-	if ( strlen(argument) < 5 )
+if (!password_new_valid(argument))
 	{
-	    send_to_desc_color( "Password must be at least five characters long.\n\rPassword: ", d);
+    send_to_desc_color( "Password must be 12 to 128 bytes.\n\rPassword: ", d);
 	    return;
 	}
 
@@ -2655,7 +2692,10 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	  send_to_char( "New password cannot begin with the '!' character.",ch);
 	  return;
 	 }
-        pwdnew = crypt( argument, ch->name );
+        if (!auth_attempt(d->descriptor, ch->name) || !password_hash(argument, pwdnew)) {
+            send_to_desc_color("Password creation unavailable; try again later.\n\rPassword: ", d);
+            return;
+        }
 	for ( p = pwdnew; *p != '\0'; p++ )
 	{
 	    if ( *p == '~' )
@@ -2672,9 +2712,13 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
 	break;
 
     case CON_CONFIRM_NEW_PASSWORD:
+        if (!auth_attempt(d->descriptor, ch->name)) {
+            send_to_desc_color("Authentication temporarily busy. Try again later.\n\rConfirm password: ", d);
+            return;
+        }
 	send_to_desc_color("\n\r", d );
 
-        if ( strcmp( crypt( argument, ch->pcdata->pwd ), ch->pcdata->pwd ) )
+        if (!password_verify(argument, ch->pcdata->pwd))
         {
             send_to_desc_color( "Passwords don't match.\n\rRetype password: ", d);
             d->connected = CON_GET_NEW_PASSWORD;

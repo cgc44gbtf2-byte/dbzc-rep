@@ -5934,33 +5934,12 @@ void do_set_boot_time( CHAR_DATA *ch, char *argument)
     }
 }
 
-/* Online high level immortal command for displaying what the encryption
- * of a name/password would be, taking in 2 arguments - the name and the
- * password - can still only change the password if you have access to 
- * pfiles and the correct password
- */ 
+/* Keep the old command entry inert; never display reusable password hashes. */
 void do_form_password( CHAR_DATA *ch, char *argument) 
 {
-   char arg[MAX_STRING_LENGTH];
-
+   (void)argument;
    set_char_color( AT_IMMORT, ch );  
-
-   argument = one_argument(argument, arg);
-
-   if( !arg || arg[0] == '\0' )
-   {
-	send_to_char( "Usage: formpass <Name> <password>\n\r", ch );
-	send_to_char( "Name should be capitalized for proper results.\n\r", ch );
-	return;
-   }
-
-   if( !argument || argument[0] == '\0' )
-   {
-	do_form_password( ch, "" );
-	return;
-   }
-
-   ch_printf(ch, "Those two arguments encrypted result in:  %s\n\r", crypt(arg, argument));
+   send_to_char("Password hash display is disabled. Use the password reset command.\n\r", ch);
    return;
 }
 
@@ -9473,9 +9452,10 @@ bool is_leader( CHAR_DATA *ch );
 void do_delete (CHAR_DATA * ch, char *argument)
 {
   char arg[MAX_INPUT_LENGTH], buf[MAX_INPUT_LENGTH];
-  argument = one_argument (argument, arg);
+  const char *tokens = argument;
+  if (IS_NPC(ch) || !ch->pcdata) return;
 
-  if (arg[0] == '\0')
+  if (!password_token(&tokens, arg, sizeof(arg)) || *tokens)
     {
       send_to_char ("\n\rIf you would like to delete this character, the syntax is Delete <PassWord>:\n\r", ch);
       return;
@@ -9486,7 +9466,11 @@ void do_delete (CHAR_DATA * ch, char *argument)
      return;
   }
 
-  if ( strcmp( crypt( arg, ch->pcdata->pwd ), ch->pcdata->pwd ) )
+  if (!ch->desc || !auth_attempt(ch->desc->descriptor, ch->pcdata->filename)) {
+      send_to_char("Authentication temporarily busy. Try again later.\n\r", ch);
+      return;
+  }
+  if (!password_verify(arg, ch->pcdata->pwd))
     {
       send_to_char ("Wrong password.\n\r", ch);
       return;

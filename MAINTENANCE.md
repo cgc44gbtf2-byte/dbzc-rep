@@ -1,4 +1,4 @@
-# Maintenance batches 1–4
+# Maintenance batches 1–5
 
 This branch is a development baseline, **not a production security clearance**.
 
@@ -16,7 +16,7 @@ On Debian/Ubuntu the packages are `build-essential` and `libcrypt-dev`.
 
 ```sh
 sudo apt-get update
-sudo apt-get install --no-install-recommends build-essential libcrypt-dev python3 git
+sudo apt-get install --no-install-recommends build-essential libcrypt-dev libargon2-dev python3 git
 make -C dbzc/src -j4
 ```
 
@@ -55,6 +55,7 @@ python3 tests/copyover_records.py
 python3 tests/rank_ownership.py
 python3 tests/reserve_lifecycle.py
 python3 tests/runtime_dirs.py
+python3 tests/auth.py
 git diff --check
 ```
 
@@ -143,6 +144,54 @@ before exec; pending/failed output aborts the copyover and removes its recovery
 file so the admin can retry after clients drain. Emergency crash recovery and
 process shutdown cannot promise delivery. Idle clients can still be disconnected
 by the existing timeout policy.
+
+## Password security and login throttling (batch 5)
+
+New passwords use libargon2 Argon2id v19 (19 MiB, two iterations, one lane)
+with a fresh 128-bit kernel-random salt. New passwords must be 12–128 bytes.
+Plaintext `NOCRYPT` builds are rejected. Keep account files and backups private;
+password hashes remain sensitive.
+
+Successful legacy DES/MD5-crypt/SHA-crypt authentication upgrades the password
+after the full player loads or reconnects, not during a partial character load.
+Only bounded, recognized legacy hash formats are accepted (SHA-crypt rounds
+1000–10000). Unsupported/manual hash formats require an administrator reset.
+DES inputs longer than eight bytes are ambiguous and are not silently migrated.
+Legacy passwords longer than the new limit remain verifiable up to the historical
+input limit but require an explicit change. Failed or throttled upgrades leave
+the original credential intact and report that the upgrade was deferred.
+
+The password command now requires reauthentication:
+
+```text
+password <current> <new> <again>
+```
+
+Quoted tokens support spaces; matching and parsing preserve case. Deletion and
+administrator password reset use the same verification/hashing helpers.
+Sensitive commands are redacted before diagnostic/watch/snoop/fuse/log output,
+independently of editable command-log settings. The hash-display command is
+disabled. These protections do not encrypt network traffic: plain Telnet still
+exposes credentials. Configure encrypted transport before public deployment.
+
+Each expensive hash/verification consumes a token: at most four per monotonic
+second globally, twelve per numeric peer IP per minute, and six per
+case-normalized account per minute. A migration or change can cost two tokens.
+Limits survive reconnects, use bounded non-evicting tables, and fail closed on
+capacity exhaustion. Fixed windows permit bursts at boundaries; shared NATs
+share an IP budget. Restart/copyover clears these process-local budgets.
+These are short temporary limits, not persistent account locks. A distributed
+attacker can still consume global capacity; upstream filtering remains needed.
+
+Do not roll back to an old executable after accounts have migrated: old code
+cannot verify Argon2id. Preserve protected backups and plan recovery explicitly.
+The previous DBZC2 controlled-restart rollback restriction still applies.
+
+Batch 5 adds sanitizer helper/production-flow tests for legacy migration,
+bounded formats/costs, entropy failure, reconnect/save ordering, current-password
+checks, throttling, and sensitive command redaction. Verification status is
+reported in the PR checks; the earlier live-copyover tests below predate this
+authentication batch and do not validate its live login behavior.
 
 ## Verification and remaining work
 

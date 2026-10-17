@@ -1,0 +1,50 @@
+name: Linux build and sanitizer regressions
+
+on:
+  push:
+    branches: [main, developement]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:latest", "debian:stable"]
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install build and test dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential libcrypt-dev python3 git ca-certificates
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Record distribution and compiler
+        run: |
+          cat /etc/os-release
+          gcc --version
+          ldd --version
+      - name: Build full executable
+        run: make -C dbzc/src -j2
+      - name: Test connection lifecycle with sanitizers
+        run: timeout 120s python3 tests/connection_lifecycle.py
+      - name: Test HTML output with sanitizers
+        run: timeout 120s sh tests/web_output_test.sh

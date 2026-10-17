@@ -1616,7 +1616,7 @@ void do_clans( CHAR_DATA *ch, char *argument )
             bug( "do_clans: cannot open clans web file!" );
             return;
           }
-          fprintf( www, htmlcolor("\n\n&cClan                 Leader        Number1       Number2     Kills  Lvl  Members\n\r&z==============================================================================&W\n"));
+          write_htmlcolor( www, "\n\n&cClan                 Leader        Number1       Number2     Kills  Lvl  Members\n\r&z==============================================================================&W\n" );
         }
         else
         send_to_char("\n\r\n\r&cClan                 Leader        Number1       Number2     Kills  Lvl  Members\n\r&z=================================================================================\n\r", ch);
@@ -1630,12 +1630,12 @@ void do_clans( CHAR_DATA *ch, char *argument )
             clan->number2, (clan->pkills[6]+clan->pkills[2]+clan->pkills[3]+
 	    clan->pkills[4]+clan->pkills[5]+clan->pkills[1]+clan->pkills[0]), clan->level, clan->members );
            if ( !ch )
-             fprintf( www,  htmlcolor(buf)  );
+             write_htmlcolor( www, buf );
            else
            send_to_char(buf, ch);
         }
           if ( !ch )
-           fprintf( www, htmlcolor("&z=================================================================================" ));
+           write_htmlcolor( www, "&z=================================================================================" );
           else
            send_to_char( "&z=================================================================================", ch );
 

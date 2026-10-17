@@ -553,7 +553,7 @@ bool chk_watch(sh_int player_level, char *player_name, char *player_site)
 void accept_new( int ctrl )
 {
 	static struct timeval null_time;
-	DESCRIPTOR_DATA *d;
+	DESCRIPTOR_DATA *d, *dn;
 	/* int maxdesc; Moved up for use with id.c as extern */
 
 #if defined(MALLOC_DEBUG)
@@ -567,11 +567,24 @@ void accept_new( int ctrl )
 	FD_ZERO( &in_set  );
 	FD_ZERO( &out_set );
 	FD_ZERO( &exc_set );
+	if ( ctrl < 0 || ctrl >= FD_SETSIZE )
+	{
+	    bug( "Accept_new: controlling descriptor %d outside select range", ctrl );
+	    return;
+	}
 	FD_SET( ctrl, &in_set );
 	maxdesc	= ctrl;
 	newdesc = 0;
-	for ( d = first_descriptor; d; d = d->next )
+	for ( d = first_descriptor; d; d = dn )
 	{
+	    dn = d->next;
+	    /* Copyover can restore descriptors without going through accept(). */
+	    if ( d->descriptor < 0 || d->descriptor >= FD_SETSIZE )
+	    {
+	        bug( "Accept_new: descriptor %d outside select range", d->descriptor );
+	        close_socket( d, TRUE );
+	        continue;
+	    }
 	    maxdesc = UMAX( maxdesc, d->descriptor );
 	    FD_SET( d->descriptor, &in_set  );
 	    FD_SET( d->descriptor, &out_set );
@@ -940,7 +953,12 @@ void new_descriptor( int new_desc )
     DESCRIPTOR_DATA *dnew;
     struct sockaddr_in sock;
     struct hostent *from;
-    size_t desc, size;
+    int desc;
+#ifdef WIN32
+    int size;
+#else
+    socklen_t size;
+#endif
     char bugbuf[MAX_STRING_LENGTH];
 //    char buf2[MSL];
 #ifdef WIN32
@@ -963,8 +981,16 @@ void new_descriptor( int new_desc )
 	set_alarm( 0 );
 	return;
     }
+    if ( desc >= FD_SETSIZE )
+    {
+      bug( "New_descriptor: descriptor %d outside select range", desc );
+      closesocket( desc );
+      set_alarm( 0 );
+      return;
+    }
     if ( check_bad_desc( new_desc ) )
     {
+      closesocket( desc );
       set_alarm( 0 );
       return;
     }
@@ -983,11 +1009,16 @@ void new_descriptor( int new_desc )
 #endif
     {
 	perror( "New_descriptor: fcntl: FNDELAY" );
+	closesocket( desc );
 	set_alarm( 0 );
 	return;
     }
     if ( check_bad_desc( new_desc ) )
+    {
+      closesocket( desc );
+      set_alarm( 0 );
       return;
+    }
 
     CREATE( dnew, DESCRIPTOR_DATA, 1 );
     dnew->next		= NULL;
@@ -1532,10 +1563,11 @@ void free_desc( DESCRIPTOR_DATA *d )
       DISPOSE( d->outbuf );
     if ( d->pagebuf )
 	DISPOSE( d->pagebuf );
-//        STRFREE( d->client );
+    if ( d->client )
+      STRFREE( d->client );
 
     DISPOSE( d );
-    --num_descriptors;
+    /* Unlinked, rejected connections have never been counted. */
     return;
 }
 
@@ -1680,8 +1712,10 @@ void close_socket( DESCRIPTOR_DATA *dclose, bool force )
     if ( dclose->descriptor == maxdesc )
       --maxdesc;
 
+    /* Recovery counts a descriptor only after its character loads. */
+    if ( dclose->connected != CON_COPYOVER_RECOVER )
+      --num_descriptors;
     free_desc( dclose );
-    --num_descriptors;
     return;
 }
 
@@ -2271,6 +2305,7 @@ void nanny( DESCRIPTOR_DATA *d, char *argument )
       	      {
                 send_to_desc_color( "&RThe MUD is currently preparing for a reboot.\n\rNew players are not accepted during this time.\n\rPlease try again in a few minutes.\n\r", d);
 		close_socket( d, FALSE );
+                return;
               }
               send_to_desc_color( "\n\r&zChoosing a name is one of the most important parts of this game...\n\rMake sure to pick a name appropriate to the character you are going\n\rto role play, and be sure that it suits a &WDBZ Theme&z.\n\rIf the name you select is not acceptable, you will be asked to choose\n\ranother one.\n\r\n\rPlease choose a &WName&z for your character:&w\n\r", d);
 	      d->newstate++;

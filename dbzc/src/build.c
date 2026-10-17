@@ -9177,8 +9177,8 @@ void  do_planets( CHAR_DATA *ch, char *argument )
             bug( "do_clans: cannot open clans web file!" );
             return;
        }
-       fprintf( www, htmlcolor("\n&cPlanet                 PopSupport    Income          Organization") );
-       fprintf( www, htmlcolor("\n&z==========================================================================\n" ));
+       write_htmlcolor( www, "\n&cPlanet                 PopSupport    Income          Organization" );
+       write_htmlcolor( www, "\n&z==========================================================================\n" );
    }
    else
    {
@@ -9195,7 +9195,7 @@ void  do_planets( CHAR_DATA *ch, char *argument )
        if (!ch && !str_cmp( argument, "www" ))
        {
         sprintf(buf,"&G%-17s      &W%-3d&z          &O$&Y%-10d&C     %s\n", pArea->name, pArea->popsupport,pArea->income, clan ? clan->name : "None");
-         fprintf( www, htmlcolor(buf) );
+         write_htmlcolor( www, buf );
        }
        else
        {
@@ -9207,7 +9207,7 @@ void  do_planets( CHAR_DATA *ch, char *argument )
    }
    if ( !ch && !str_cmp( argument, "www" ))
    {
-     fprintf( www, htmlcolor("&z==========================================================================\n"));
+     write_htmlcolor( www, "&z==========================================================================\n" );
      fclose( www );
    }
    else

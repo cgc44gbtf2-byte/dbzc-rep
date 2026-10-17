@@ -4577,7 +4577,7 @@ void towizfile( const char *line, int Border )
   wwwfp = fopen( WEBWIZLIST_FILE, "a" );
   if ( wwwfp )
   {
-     fputs( htmlcolor(outline2), wwwfp );
+     write_htmlcolor( wwwfp, outline2 );
      fclose( wwwfp );
   }
 

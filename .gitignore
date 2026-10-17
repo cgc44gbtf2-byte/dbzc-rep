@@ -1,0 +1,4 @@
+/dbzc/src/*.o
+/dbzc/src/dbzc
+__pycache__/
+*.pyc

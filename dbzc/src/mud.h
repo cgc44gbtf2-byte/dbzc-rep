@@ -1879,7 +1879,7 @@ typedef enum
   WEAR_ARMS, WEAR_SHIELD, WEAR_ABOUT, WEAR_WAIST, WEAR_WRIST_L, WEAR_WRIST_R,
   WEAR_WIELD, WEAR_HOLD, WEAR_DUAL_WIELD, WEAR_EARS, WEAR_EYES,
   WEAR_MISSILE_WIELD, WEAR_BACK, WEAR_FACE, WEAR_ANKLE_L, WEAR_ANKLE_R, WEAR_SLOT1, WEAR_SLOT2,
-  MAX_WEAR, WEAR_BUG, WEAR_BUG, WEAR_WIELD_L, WEAR_WIELD_R, 
+  MAX_WEAR, WEAR_BUG, WEAR_BUG_RESERVED, WEAR_WIELD_L, WEAR_WIELD_R,
 } wear_locations;
 
 /* Board Types */
@@ -4892,7 +4892,7 @@ sh_int 	get_curr_pdef		args( ( CHAR_DATA *ch ) );
 sh_int 	get_curr_edef		args( ( CHAR_DATA *ch ) );
 sh_int 	get_curr_eatk		args( ( CHAR_DATA *ch ) );
 sh_int 	get_curr_health		args( ( CHAR_DATA *ch ) );
-char *htmlcolor		args( ( char *arg ) );
+char *htmlcolor		args( ( const char *arg ) );
 void	do_looksky	args( ( CHAR_DATA *ch, char *argument ) );
 //double sqrt args( (double Nbr) );
 int  clan_name args( ( CLAN_DATA *clan ) );
@@ -5467,4 +5467,7 @@ void Win32_Exit(int exit_code);
 #define IN_TRAIN(ch)		(IS_SET((ch)->in_room->room_flags2, ROOM_TRAIN))
 #define IN_CONTROL(ch)          (IS_SET((ch)->in_room->room_flags2, ROOM_CONTROL))
 #define IN_NOQUITROOM(ch)       (IS_SET((ch)->in_room->room_flags2, ROOM_NOQUIT))
+
+/* web_output.c: htmlcolor returns an owned STRALLOC reference (or NULL). */
+int write_htmlcolor( FILE *stream, const char *src );
 #define IN_NOEXIT(ch)           (IS_SET((ch)->in_room->room_flags2, ROOM_NOEXIT))

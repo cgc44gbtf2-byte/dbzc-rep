@@ -3496,14 +3496,14 @@ void do_who( CHAR_DATA *ch, char *argument )
     if ( first_mortal )
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor("&W&b=============================&z[&G&Y NEWBIE FIGHTERS&z ]&b===========================&W\n\n"));
+        write_htmlcolor( whoout, "&W&b=============================&z[&G&Y NEWBIE FIGHTERS&z ]&b===========================&W\n\n" );
       else
          send_to_char( "\n\r&W&b=============================&z[&G&Y NEWBIE FIGHTERS&z ]&b===========================&W\n\r\n\r", ch);
     }
     for ( cur_who = first_mortal; cur_who; cur_who = next_who )
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor(cur_who->text) );
+        write_htmlcolor( whoout, cur_who->text );
       else
         send_to_char( cur_who->text, ch );
       next_who = cur_who->next;
@@ -3514,7 +3514,7 @@ void do_who( CHAR_DATA *ch, char *argument )
     if ( first_true )
     {
        if ( !ch )
-        fprintf( whoout, htmlcolor("&W&b==============================&z[&G&Y TRUE FIGHTERS &z]&b============================&W\n\n"));
+        write_htmlcolor( whoout, "&W&b==============================&z[&G&Y TRUE FIGHTERS &z]&b============================&W\n\n" );
       else 
           send_to_char( "\n\r&W&b==============================&z[&G&Y TRUE FIGHTERS &z]&b============================&W\n\r\n\r", ch);
 
@@ -3523,7 +3523,7 @@ void do_who( CHAR_DATA *ch, char *argument )
     for ( cur_who = first_true; cur_who; cur_who = next_who )
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor(cur_who->text) );
+        write_htmlcolor( whoout, cur_who->text );
       else
         send_to_char( cur_who->text, ch );
       next_who = cur_who->next;
@@ -3534,7 +3534,7 @@ void do_who( CHAR_DATA *ch, char *argument )
     if ( first_asce )
     {
        if ( !ch )
-        fprintf( whoout, htmlcolor("&W&b============================&z[&G&Y ASCENDED FIGHTERS &z]&b==========================&W\n\n"));
+        write_htmlcolor( whoout, "&W&b============================&z[&G&Y ASCENDED FIGHTERS &z]&b==========================&W\n\n" );
       else
          send_to_char( "\n\r&W&b============================&z[&G&Y ASCENDED FIGHTERS &z]&b==========================&W\n\r\n\r", ch);
 
@@ -3543,7 +3543,7 @@ void do_who( CHAR_DATA *ch, char *argument )
     for ( cur_who = first_asce; cur_who; cur_who = next_who )
     {
       if ( !ch )
-        fprintf( whoout,htmlcolor( cur_who->text ) );
+        write_htmlcolor( whoout, cur_who->text );
       else
         send_to_char( cur_who->text, ch );
       next_who = cur_who->next;
@@ -3554,7 +3554,7 @@ void do_who( CHAR_DATA *ch, char *argument )
     if ( first_supreme )
     {
        if ( !ch )
-        fprintf( whoout, htmlcolor("&W&b============================&z[&G&Y SUPREME  FIGHTERS &z]&b==========================&W\n\n"));
+        write_htmlcolor( whoout, "&W&b============================&z[&G&Y SUPREME  FIGHTERS &z]&b==========================&W\n\n" );
       else
          send_to_char( "\n\r&W&b============================&z[&G&Y SUPREME  FIGHTERS &z]&b==========================&W\n\r\n\r", ch);
 
@@ -3563,7 +3563,7 @@ void do_who( CHAR_DATA *ch, char *argument )
     for ( cur_who = first_supreme; cur_who; cur_who = next_who )
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor(cur_who->text) );
+        write_htmlcolor( whoout, cur_who->text );
       else
         send_to_char( cur_who->text, ch );
       next_who = cur_who->next;
@@ -3574,7 +3574,7 @@ void do_who( CHAR_DATA *ch, char *argument )
     if ( first_xtreme )
     {
        if ( !ch )
-        fprintf( whoout, htmlcolor("&W&b============================&z[&G&Y EXTREME  FIGHTERS &z]&b==========================&W\n\n"));
+        write_htmlcolor( whoout, "&W&b============================&z[&G&Y EXTREME  FIGHTERS &z]&b==========================&W\n\n" );
       else
          send_to_char( "\n\r&W&b============================&z[&G&Y EXTREME  FIGHTERS &z]&b==========================&W\n\r\n\r", ch);
 
@@ -3583,7 +3583,7 @@ void do_who( CHAR_DATA *ch, char *argument )
     for ( cur_who = first_xtreme; cur_who; cur_who = next_who )
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor(cur_who->text) );
+        write_htmlcolor( whoout, cur_who->text );
       else
         send_to_char( cur_who->text, ch );
       next_who = cur_who->next;
@@ -3595,14 +3595,14 @@ void do_who( CHAR_DATA *ch, char *argument )
     if (first_grouped)
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor("\n\r-----------------------------[ GROUPED CHARACTERS ]---------------------------\n\r\n\r") );
+        write_htmlcolor( whoout, "\n\r-----------------------------[ GROUPED CHARACTERS ]---------------------------\n\r\n\r" );
       else
        send_to_char( "\n\r-----------------------------[ GROUPED CHARACTERS ]---------------------------\n\r\n\r", ch );
     }
     for ( cur_who = first_grouped; cur_who; cur_who = next_who )
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor(cur_who->text) );
+        write_htmlcolor( whoout, cur_who->text );
       else
         send_to_char( cur_who->text, ch );
       next_who = cur_who->next;
@@ -3613,14 +3613,14 @@ void do_who( CHAR_DATA *ch, char *argument )
     if (first_groupwho)
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor("\n\r-------------------------------[ WANTING GROUP ]------------------------------\n\r\n\r") );
+        write_htmlcolor( whoout, "\n\r-------------------------------[ WANTING GROUP ]------------------------------\n\r\n\r" );
       else
        send_to_char( "\n\r-------------------------------[ WANTING GROUP ]------------------------------\n\r\n\r", ch );
     }
     for ( cur_who = first_groupwho; cur_who; cur_who = next_who )
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor(cur_who->text) );
+        write_htmlcolor( whoout, cur_who->text );
       else
         send_to_char( cur_who->text, ch );
       next_who = cur_who->next;
@@ -3631,7 +3631,7 @@ void do_who( CHAR_DATA *ch, char *argument )
     if ( first_imm )
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor("\n\r&W&b================================&z[&G&Y IMMORTALS &z]&b==============================&W\n\r\n\r") );
+        write_htmlcolor( whoout, "\n\r&W&b================================&z[&G&Y IMMORTALS &z]&b==============================&W\n\r\n\r" );
       else
        send_to_char( "\n\r&W&b================================&z[&G&Y IMMORTALS &z]&b==============================&W\n\r\n\r", ch );
     }
@@ -3639,7 +3639,7 @@ void do_who( CHAR_DATA *ch, char *argument )
     for ( cur_who = first_imm; cur_who; cur_who = next_who )
     {
       if ( !ch )
-        fprintf( whoout, htmlcolor(cur_who->text) );
+        write_htmlcolor( whoout, cur_who->text );
       else
         send_to_char( cur_who->text, ch );
       next_who = cur_who->next;
@@ -3649,7 +3649,8 @@ void do_who( CHAR_DATA *ch, char *argument )
 
     if ( !ch )
     {
-	fprintf( whoout, htmlcolor("&Y%d player%s.\n\r"), nMatch, nMatch == 1 ? "" : "s" );
+snprintf( buf, sizeof(buf), "&Y%d player%s.\n\r", nMatch, nMatch == 1 ? "" : "s" );
+write_htmlcolor( whoout, buf );
 	fclose( whoout );
 	return;
     }

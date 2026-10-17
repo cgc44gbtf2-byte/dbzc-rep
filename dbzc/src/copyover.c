@@ -42,6 +42,14 @@
 #include <sys/select.h>
 #include "mud.h"
 #include "copyover_record.h"
+#include "proxy_protocol.h"
+
+static int copyover_close_registered_socket(int fd)
+{
+    auth_proxy_forget(fd);
+    return close(fd);
+}
+#define close copyover_close_registered_socket
 
 
 void    send_to_desc_color args( ( const char *txt, DESCRIPTOR_DATA *d ) );
@@ -1222,6 +1230,24 @@ void copyover_recover( void )
         exit(1);
     }
     FCLOSE(fp);
+    /* Validate all identities before loading any player or emitting output.
+     * Older hostname records cannot establish a trusted proxy identity. */
+    if (auth_proxy_mode())
+    {
+        extern int control;
+        if (!proxy_listener_valid(control))
+        {
+            bug("%s", "Unsafe proxy copyover listener; perform a controlled restart.");
+            exit(1);
+        }
+        for (record_index = 0; record_index < record_count; ++record_index)
+            if (!auth_proxy_register(records[record_index].desc,
+                                     records[record_index].host))
+            {
+                bug("%s", "Untrusted proxy copyover IP/socket (legacy hostname unsupported); perform a controlled restart.");
+                exit(1);
+            }
+    }
     memset(keep, 0, sizeof(keep));
     for (record_index = 0; record_index < record_count; ++record_index)
     {

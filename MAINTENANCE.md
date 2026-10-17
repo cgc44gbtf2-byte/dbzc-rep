@@ -1,4 +1,4 @@
-# Maintenance batches 1–5
+# Maintenance batches 1–6
 
 This branch is a development baseline, **not a production security clearance**.
 
@@ -16,7 +16,7 @@ On Debian/Ubuntu the packages are `build-essential` and `libcrypt-dev`.
 
 ```sh
 sudo apt-get update
-sudo apt-get install --no-install-recommends build-essential libcrypt-dev libargon2-dev python3 git
+sudo apt-get install --no-install-recommends build-essential libcrypt-dev libargon2-dev haproxy openssl python3 git
 make -C dbzc/src -j4
 ```
 
@@ -56,6 +56,8 @@ python3 tests/rank_ownership.py
 python3 tests/reserve_lifecycle.py
 python3 tests/runtime_dirs.py
 python3 tests/auth.py
+python3 tests/tls_proxy.py
+python3 tests/tls_config.py
 git diff --check
 ```
 
@@ -200,6 +202,44 @@ toolchain. The non-legacy Nix crypt variant excludes some existing password
 formats; the auth suite intentionally fails when that compatibility is absent.
 The Makefile and auth tests consume NIX_CFLAGS_COMPILE/NIX_LDFLAGS when set.
 Ubuntu/Debian use the development packages listed above.
+
+## TLS-only access (batch 6)
+
+See [deploy/tls/README.md](deploy/tls/README.md) for the reviewed-host HAProxy,
+certificate, firewall and systemd setup. Nothing is deployed automatically.
+The game now defaults to an IPv4 loopback listener, not a public listener.
+DBZC_BIND_ADDRESS accepts numeric IPv4; explicit wildcard plaintext binding is
+permitted only in direct mode. Use TLS-only ingress for public service.
+
+With DBZC_PROXY_PROTOCOL=1, both listener and accepted peer must be loopback.
+A bounded nonblocking PROXY v1 gate validates canonical numeric client identity
+before any greeting, bans or login. Headers have a five-second total deadline,
+107-byte bound and a 128-pending-socket cap. Malformed/unsupported headers fail
+closed. Coalesced game input is preserved.
+
+HAProxy owns TLS sessions, so game copyover retains the backend TCP connections
+without trying to serialize TLS state. Validated real client IPs feed bans and
+authentication budgets and are restored from DBZC2 records only after checking
+inherited listener/socket trust. Historical hostname recovery records cannot
+establish trusted proxy identities: transition with a controlled restart.
+Do not change bind/proxy mode during a live copyover.
+
+The trust boundary includes local processes: loopback plaintext and PROXY
+headers are not authenticated against other local users. Use a dedicated trusted
+host, restrictive public firewall, private service account and a verified public
+certificate. This is not hostile multi-tenant isolation.
+
+Local verification includes the full build, existing eight suites, the new
+sanitizer proxy suite and actual HAProxy config validation. A fresh disposable
+game behind loopback HAProxy completed certificate/hostname-verified TLS 1.3
+login, persisted legacy-to-Argon2id migration, repeated system saves, and real
+same-TLS-connection copyover. A post-copyover password change also passed, with
+the original client IP retained in the player file and no password in the server
+log. A repeat fresh-copy run also rejected plaintext at the TLS frontend and
+an incorrect certificate hostname before completing the same live checks.
+Both processes were stopped. No public listener, real certificate issuance,
+host firewall change, or deployment was performed. Production systemd/ACME,
+external reachability, multi-client load and long idle sessions remain to test.
 
 ## Verification and remaining work
 

@@ -40,9 +40,11 @@ name_branch = nanny[nanny.index("    case CON_GET_NAME:"):
 branch = ("void test_get_name(DESCRIPTOR_DATA *d, char *argument) {\n"
           "switch (d->connected) {\n" + name_branch + "\n} }\n")
 pieces = [function(n) for n in
-          ("free_desc", "close_socket", "new_descriptor", "accept_new")]
+          ("free_desc", "close_socket", "initialize_descriptor", "new_descriptor", "accept_new")]
 harness = (ROOT / "tests/connection_lifecycle_harness.c").read_text()
-generated = harness.replace("/* EXTRACTED_FUNCTIONS */", "\n\n".join(pieces) + branch)
+generated = ('#include "auth_rate.h"\n#include "proxy_protocol.h"\n'
+             'void initialize_descriptor(int, const char *, unsigned short);\n' +
+             harness.replace("/* EXTRACTED_FUNCTIONS */", "\n\n".join(pieces) + branch))
 flags = shlex.split(os.environ.get(
     "CONNECTION_TEST_CFLAGS",
     "-std=gnu11 -g -O1 -Wall -Wextra -Werror "
@@ -51,7 +53,12 @@ with tempfile.TemporaryDirectory(prefix="connection-test-") as tmp:
     cfile, exe = Path(tmp) / "lifecycle.c", Path(tmp) / "lifecycle"
     cfile.write_text(generated)
     subprocess.run(shlex.split(os.environ.get("CC", "cc")) +
-                   flags + [str(cfile), "-o", str(exe)], check=True)
+                   shlex.split(os.environ.get("NIX_CFLAGS_COMPILE", "")) +
+                   flags + ["-I" + str(ROOT / "dbzc/src"), str(cfile),
+                            str(ROOT / "dbzc/src/auth_rate.c"),
+                            str(ROOT / "dbzc/src/proxy_protocol.c")] +
+                   shlex.split(os.environ.get("NIX_LDFLAGS", "")) +
+                   ["-o", str(exe)], check=True)
     subprocess.run([str(exe)], check=True,
                    env={**os.environ, "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1",
                         "UBSAN_OPTIONS": "halt_on_error=1"})

@@ -40,6 +40,8 @@
 #endif
 #include "mud.h"
 #include "copyover_record.h"
+#include "proxy_protocol.h"
+void initialize_descriptor(int desc, const char *ip, unsigned short port);
 //#include <zlib.h>
 #include <arpa/telnet.h>
 
@@ -77,7 +79,12 @@ void	update_skill( CHAR_DATA *ch );
   #include <arpa/inet.h>
   #include <arpa/telnet.h>
   #include <netdb.h>
-  #define closesocket close
+  static int close_registered_socket(int fd)
+  {
+      auth_proxy_forget(fd);
+      return close(fd);
+  }
+  #define closesocket close_registered_socket
 #endif
 
 #ifdef sun
@@ -388,6 +395,19 @@ int port;
 	conjava  = init_socket( port+20);*/
     }
     
+    if (getenv("DBZC_PROXY_PROTOCOL")
+        && strcmp(getenv("DBZC_PROXY_PROTOCOL"), "0")
+        && strcmp(getenv("DBZC_PROXY_PROTOCOL"), "1"))
+    {
+        fprintf(stderr, "DBZC_PROXY_PROTOCOL must be 0 or 1.\n");
+        exit(1);
+    }
+    if ((auth_proxy_mode() && !proxy_listener_valid(control))
+        || fcntl(control, F_SETFL, O_NONBLOCK) < 0)
+    {
+        fprintf(stderr, "Unsafe inherited listener: proxy mode requires IPv4 loopback. Perform a controlled restart.\n");
+        exit(1);
+    }
     /* I don't know how well this will work on an unnamed machine as I don't
        have one handy, and the man pages are ever-so-helpful.. -- Alty */
     if (gethostname(hostn, sizeof(hostn)) < 0)
@@ -405,6 +425,7 @@ int port;
   
   game_loop( );    
 
+    proxy_pending_close();
     closesocket( control  );
 
 #ifdef WIN32
@@ -481,6 +502,17 @@ int init_socket( int port )
     sa.sin_family   = AF_INET;
     sa.sin_port	    = htons( port );
 
+    {
+        const char *bind_address = getenv("DBZC_BIND_ADDRESS");
+        if (!bind_address) bind_address = "127.0.0.1";
+        if (inet_pton(AF_INET, bind_address, &sa.sin_addr) != 1
+            || (auth_proxy_mode() && (ntohl(sa.sin_addr.s_addr) >> 24) != 127))
+        {
+            fprintf(stderr, "DBZC_BIND_ADDRESS must be numeric IPv4; proxy mode requires loopback.\n");
+            closesocket(fd);
+            exit(1);
+        }
+    }
     if ( bind( fd, (struct sockaddr *) &sa, sizeof(sa) ) == -1 )
     {
 	perror( "Init_socket: bind" );
@@ -495,6 +527,12 @@ int init_socket( int port )
 	exit( 1 );
     }
 
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0)
+    {
+        perror("Init_socket: nonblocking");
+        closesocket(fd);
+        exit(1);
+    }
     return fd;
 }
 
@@ -608,6 +646,7 @@ void accept_new( int ctrl )
 	      break;
 	}
 //	auth_maxdesc(&maxdesc, &in_set, &out_set, &exc_set);
+        proxy_pending_select(&in_set, &maxdesc);
 	
 	if ( select( maxdesc+1, &in_set, &out_set, &exc_set, &null_time ) < 0 )
 	{
@@ -627,6 +666,7 @@ void accept_new( int ctrl )
 	    newdesc = ctrl;
 	    new_descriptor( newdesc );
 	}
+        proxy_pending_poll(initialize_descriptor);
 }
 
 void emergancy_copyover( void )
@@ -994,10 +1034,7 @@ void game_loop( )
 
 void new_descriptor( int new_desc )
 {
-    char buf[MAX_STRING_LENGTH];
-    DESCRIPTOR_DATA *dnew;
     struct sockaddr_in sock;
-    struct hostent *from;
     int desc;
 #ifdef WIN32
     int size;
@@ -1026,6 +1063,7 @@ void new_descriptor( int new_desc )
 	set_alarm( 0 );
 	return;
     }
+    auth_proxy_forget(desc);
     if ( desc >= FD_SETSIZE )
     {
       bug( "New_descriptor: descriptor %d outside select range", desc );
@@ -1065,6 +1103,25 @@ void new_descriptor( int new_desc )
       return;
     }
 
+    if (auth_proxy_mode())
+    {
+        if (!proxy_pending_add(new_desc, desc))
+            closesocket(desc);
+        set_alarm(0);
+        return;
+    }
+    initialize_descriptor(desc, inet_ntoa(sock.sin_addr), ntohs(sock.sin_port));
+}
+
+void initialize_descriptor(int desc, const char *ip, unsigned short port)
+{
+    char buf[MAX_STRING_LENGTH];
+    DESCRIPTOR_DATA *dnew;
+    struct sockaddr_in sock;
+    struct hostent *from;
+    memset(&sock, 0, sizeof(sock));
+    if (!auth_proxy_mode())
+        inet_pton(AF_INET, ip, &sock.sin_addr);
     CREATE( dnew, DESCRIPTOR_DATA, 1 );
     dnew->next		= NULL;
     dnew->descriptor	= desc;
@@ -1074,14 +1131,14 @@ void new_descriptor( int new_desc )
     dnew->idle		= 0;
     dnew->lines		= 0;
     dnew->scrlen	= 24;
-    dnew->port		= ntohs( sock.sin_port );
+    dnew->port		= port;
   //dnew->user 		= STRALLOC("(unknown)");
     dnew->newstate	= 0;
     dnew->prevcolor	= 0x07;
     dnew->client       = STRALLOC( "Unidentified" ); /* Terminal detect */
 
     CREATE( dnew->outbuf, char, dnew->outsize );
-    strcpy( buf, inet_ntoa( sock.sin_addr ) );
+    strcpy( buf, ip );
 
 /*
  *   HardBan - Disconnects user before they have a chance to name resolve.
@@ -1496,7 +1553,7 @@ if(!str_cmp(buf,"12.203.200.101"))
 		buf, dnew->port );
 
     log_string_plus( log_buf, LOG_COMM, sysdata.log_level );
-    if ( sysdata.NO_NAME_RESOLVING )
+    if ( auth_proxy_mode() || sysdata.NO_NAME_RESOLVING )
       dnew->host = STRALLOC( buf );
     else
     {

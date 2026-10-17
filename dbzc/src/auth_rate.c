@@ -4,6 +4,55 @@
 #include <time.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdlib.h>
+#include <sys/select.h>
+#include <sys/stat.h>
+
+/* Bind a validated identity to a particular socket, not merely its fd number. */
+static struct { char ip[INET6_ADDRSTRLEN]; dev_t dev; ino_t ino; } trusted[FD_SETSIZE];
+
+int auth_proxy_mode(void)
+{
+    const char *value = getenv("DBZC_PROXY_PROTOCOL");
+    return value && !strcmp(value, "1");
+}
+
+int auth_proxy_loopback(int fd, int peer)
+{
+    struct sockaddr_in address;
+    socklen_t length = sizeof(address);
+    memset(&address, 0, sizeof(address));
+    if ((peer ? getpeername(fd, (struct sockaddr *)&address, &length)
+              : getsockname(fd, (struct sockaddr *)&address, &length)) != 0)
+        return 0;
+    return length == sizeof(address) && address.sin_family == AF_INET
+        && (ntohl(address.sin_addr.s_addr) >> 24) == 127;
+}
+
+void auth_proxy_forget(int fd)
+{
+    if (fd >= 0 && fd < FD_SETSIZE) memset(&trusted[fd], 0, sizeof(trusted[fd]));
+}
+
+int auth_proxy_register(int fd, const char *ip)
+{
+    unsigned char address[16];
+    char canonical[INET6_ADDRSTRLEN];
+    struct stat st;
+    int family;
+    auth_proxy_forget(fd);
+    if (!auth_proxy_mode() || fd < 0 || fd >= FD_SETSIZE || !ip
+        || !auth_proxy_loopback(fd, 0) || !auth_proxy_loopback(fd, 1)
+        || fstat(fd, &st)) return 0;
+    family = strchr(ip, ':') ? AF_INET6 : AF_INET;
+    if (inet_pton(family, ip, address) != 1
+        || !inet_ntop(family, address, canonical, sizeof(canonical))
+        || strcmp(ip, canonical)) return 0;
+    strcpy(trusted[fd].ip, canonical);
+    trusted[fd].dev = st.st_dev;
+    trusted[fd].ino = st.st_ino;
+    return 1;
+}
 
 #define CAPACITY 1024
 struct bucket { char key[128]; uint64_t start; unsigned count; };
@@ -53,6 +102,17 @@ int auth_attempt(int fd, const char *account)
     const void *addr;
     if (getpeername(fd, (struct sockaddr *)&peer, &len) ||
         clock_gettime(CLOCK_MONOTONIC, &now)) return 0;
+    if (auth_proxy_mode()) {
+        struct stat st;
+        if (fd < 0 || fd >= FD_SETSIZE || !trusted[fd].ip[0]
+            || !auth_proxy_loopback(fd, 0) || !auth_proxy_loopback(fd, 1)
+            || fstat(fd, &st) || st.st_dev != trusted[fd].dev
+            || st.st_ino != trusted[fd].ino) {
+            auth_proxy_forget(fd);
+            return 0;
+        }
+        return auth_rate_allow(trusted[fd].ip, account, (uint64_t)now.tv_sec);
+    }
     if (peer.ss_family == AF_INET)
         addr = &((struct sockaddr_in *)&peer)->sin_addr;
     else if (peer.ss_family == AF_INET6) {

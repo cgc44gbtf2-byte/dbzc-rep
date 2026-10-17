@@ -31,16 +31,16 @@ O_FILES = act_comm.o act_info.o act_move.o act_obj.o act_wiz.o mortgames.o ban.o
           dbzskills.o dock.o editor.o fight.o finger.o gamble.o gboards.o handler.o hashstr.o \
           hiscores.o imm_host.o interp.o magic.o malloc.o makeobjs.o misc.o mpxset.o mud_comm.o mud_prog.o \
           overland.o pfiles.o player.o powerups.o reset.o save.o ships.o shops.o \
-          skills.o special.o tables.o track.o update.o changes.o web_output.o password_auth.o auth_rate.o\
+          skills.o special.o tables.o track.o update.o changes.o web_output.o password_auth.o auth_rate.o proxy_protocol.o\
 
 C_FILES = act_comm.c act_info.c act_move.c act_obj.c act_wiz.c mortgames.c ban.c boards.c \
           build.c clans.c color.c comm.c comments.c const.c copyover.c db.c dbzfunc.o dbzmisc.c \
           dbzskills.c dock.c editor.c fight.c finger.c gamble.c gboards.c handler.c hashstr.c \
           hiscores.c imm_host.c interp.c magic.c malloc.c makeobjs.c misc.c mpxset.c mud_comm.c mud_prog.c \
           overland.c pfiles.c player.c powerups.c reset.c save.c ships.c shops.c \
-          skills.c special.c tables.c track.c update.c changes.c web_output.c password_auth.c auth_rate.c\
+          skills.c special.c tables.c track.c update.c changes.c web_output.c password_auth.c auth_rate.c proxy_protocol.c\
 
-H_FILES = mud.h color.h bet.h copyover.h copyover_record.h gboards.h dbzskills.h pfiles.h overland.h malloc.h password_auth.h auth_rate.h
+H_FILES = mud.h color.h bet.h copyover.h copyover_record.h gboards.h dbzskills.h pfiles.h overland.h malloc.h password_auth.h auth_rate.h proxy_protocol.h
 
 all:
 	$(MAKE) dbzc

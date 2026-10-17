@@ -1,0 +1,41 @@
+[Unit]
+Description=DBZC game (loopback PROXY v1 backend)
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=dbzc
+Group=dbzc
+WorkingDirectory=/srv/dbzc/dbzc/area
+Environment=DBZC_BIND_ADDRESS=127.0.0.1
+Environment=DBZC_PROXY_PROTOCOL=1
+ExecStartPre=/bin/sh /srv/dbzc/scripts/preflight.sh /srv/dbzc/dbzc
+ExecStart=/srv/dbzc/dbzc/src/dbzc 4000
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0027
+LimitNOFILE=1024
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+# All runtime/world directories (including area/copyover files) remain writable.
+# Parent directories and code must be root-owned; do not grant dbzc code writes.
+ReadWritePaths=/srv/dbzc/dbzc /srv/dbzc/public_html
+ReadOnlyPaths=/srv/dbzc/dbzc/src /srv/dbzc/scripts
+# No RootDirectory, MemoryDenyWriteExecute, or syscall/exec filter: legacy game
+# copyover execs the same executable and retains sockets under this same unit.
+
+[Install]
+WantedBy=multi-user.target

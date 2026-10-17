@@ -38,7 +38,7 @@ C_FILES = act_comm.c act_info.c act_move.c act_obj.c act_wiz.c mortgames.c ban.c
           overland.c pfiles.c player.c powerups.c reset.c save.c ships.c shops.c \
           skills.c special.c tables.c track.c update.c changes.c web_output.c\
 
-H_FILES = mud.h color.h bet.h copyover.h gboards.h dbzskills.h pfiles.h overland.h malloc.h
+H_FILES = mud.h color.h bet.h copyover.h copyover_record.h gboards.h dbzskills.h pfiles.h overland.h malloc.h
 
 all:
 	$(MAKE) dbzc

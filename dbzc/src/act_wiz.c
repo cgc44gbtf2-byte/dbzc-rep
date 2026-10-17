@@ -857,8 +857,9 @@ void do_bamfout( CHAR_DATA *ch, char *argument )
 
 void do_rank( CHAR_DATA *ch, char *argument )
 {
-   char buf[MAX_STRING_LENGTH];
+   char buf[MAX_STRING_LENGTH] = "";
    char buf2[MSL];
+   char *rank;
   set_char_color( AT_IMMORT, ch );
 
   if ( IS_NPC(ch) )
@@ -869,12 +870,10 @@ void do_rank( CHAR_DATA *ch, char *argument )
     send_to_char( "   or:  rank none.\n\r", ch );
     return;
   }
-/*  smash_tilde( argument );
-  DISPOSE( ch->pcdata->rank );*/
   if ( !str_cmp( argument, "none" ) && !IS_IMMORTAL(ch))
   {
   sprintf( buf, "&w&W%-12.12s&Y", capitalize(npc_race[ch->race]));
-  ch->pcdata->rank = str_dup(buf);
+  rank = STRALLOC(buf);
   }
   else if ( !str_cmp( argument, "none" ) && IS_IMMORTAL(ch))
   {
@@ -910,15 +909,19 @@ void do_rank( CHAR_DATA *ch, char *argument )
   sprintf( buf, "&WPlayer Tester");
   if (ch->level == 49)
   sprintf( buf, "&WRP Assistant");
-  sprintf(buf, "&w&W%-12.12s&Y", buf);
-  ch->pcdata->rank = str_dup(buf2);
+  sprintf(buf2, "&w&W%-12.12s&Y", buf);
+  rank = STRALLOC(buf2);
   }
   else 
   { 
-  ch->pcdata->rank = str_dup( argument );
+  rank = STRALLOC( argument );
+  STRFREE( ch->pcdata->rank );
+  ch->pcdata->rank = rank;
   send_to_char( "Ok.\n\r", ch );
   return;
   }
+  STRFREE( ch->pcdata->rank );
+  ch->pcdata->rank = rank;
 }
 
 void do_retire( CHAR_DATA *ch, char *argument )
@@ -5280,8 +5283,11 @@ void do_mortalize( CHAR_DATA *ch, char *argument )
         victim->hit      = victim->max_hit;
         victim->mana     = victim->max_mana;
         victim->move     = victim->max_move;
-        DISPOSE( victim->pcdata->rank );
-        victim->pcdata->rank = str_dup( "" );
+        {
+          char *rank = STRALLOC( "" );
+          STRFREE( victim->pcdata->rank );
+          victim->pcdata->rank = rank;
+        }
         if ( xIS_SET(victim->act, PLR_WIZINVIS) )
           victim->pcdata->wizinvis = victim->trust;
         if ( xIS_SET(victim->act, PLR_WIZINVIS)

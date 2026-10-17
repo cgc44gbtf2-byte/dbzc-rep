@@ -1708,7 +1708,11 @@ void do_mset( CHAR_DATA *ch, char *argument )
 	if ( IS_NPC(victim) && xIS_SET(victim->act, ACT_PROTOTYPE) )
 	  victim->pIndexData->race = value;
       if (!IS_NPC(victim))
-      victim->pcdata->rank = str_dup( "" );        
+      {
+        char *rank = STRALLOC( "" );
+        STRFREE( victim->pcdata->rank );
+        victim->pcdata->rank = rank;
+      }
 	return;
     }
 /*
@@ -2017,12 +2021,12 @@ if ( !str_cmp( arg2, "train" ) )
 	return;
       }
       smash_tilde( argument );
-//      DISPOSE( victim->pcdata->rank );
-      if ( !argument || argument[0] == '\0' || !str_cmp( argument, "none" ) )
-      victim->pcdata->rank = str_dup( "" );
-   //   do_rank(victim, "none");
-      else
-        victim->pcdata->rank = str_dup( argument );
+      {
+        char *rank = STRALLOC( !argument || argument[0] == '\0'
+                              || !str_cmp( argument, "none" ) ? "" : argument );
+        STRFREE( victim->pcdata->rank );
+        victim->pcdata->rank = rank;
+      }
       send_to_char( "Ok.\n\r", ch );
       return;
     }

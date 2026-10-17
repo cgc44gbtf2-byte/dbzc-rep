@@ -3097,7 +3097,7 @@ void free_char( CHAR_DATA *ch )
         DISPOSE( ch->pcdata->pwd	);  /* no hash */
 	DISPOSE( ch->pcdata->bamfin	);  /* no hash */
 	DISPOSE( ch->pcdata->bamfout	);  /* no hash */
-//	DISPOSE( ch->pcdata->rank	);
+	STRFREE( ch->pcdata->rank );
         if ( ch->pcdata->title )
    	        STRFREE( ch->pcdata->title	);
 	STRFREE( ch->pcdata->bio	); 

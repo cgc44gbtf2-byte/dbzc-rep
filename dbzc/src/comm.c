@@ -39,6 +39,7 @@
 #include <crypt.h>
 #endif
 #include "mud.h"
+#include "copyover_record.h"
 //#include <zlib.h>
 #include <arpa/telnet.h>
 
@@ -649,26 +650,45 @@ void emergancy_copyover( void )
   sprintf (buf, "\n\r [ALERT]: EMERGENCY COPYOVER - Keep calm, we might pull through!\n\r" );
 	  
   /* For each playing descriptor, save its state */
-  for (d = first_descriptor; d ; d = d->next)
+  for (d = first_descriptor; d ; d = d_next)
   {
       CHAR_DATA * och = CH (d);
       d_next = d->next; /* We delete from the list , so need to save this */
 		
-      if (!och || !d->character || d->connected > CON_PLAYING) /* drop those logging on */
+      if (!och || !d->character || d->connected < CON_PLAYING) /* drop those logging on */
       {
 	  write_to_descriptor (d->descriptor, "\n\rSorry, we are rebooting. Come back in a few minutes.\n\r", 0);
-	  /* close_socket (d, FALSE); */
+	  close_socket (d, TRUE);
       }
       else
       {
-	  fprintf (fp, "%d %s %s\n", d->descriptor, och->name, d->host);
+	  if (!copyover_write_record(fp, d->descriptor,
+                  och->in_room ? och->in_room->vnum : ROOM_VNUM_TEMPLE,
+                  och->was_in_room ? och->was_in_room->vnum : ROOM_VNUM_TEMPLE,
+                  d->port, d->idle, och->name, d->host, d->client))
+          {
+              fclose(fp);
+              unlink(COPYOVER_FILE);
+              log_string("Emergency copyover record write failed; aborted.");
+              return;
+          }
 	  save_char_obj (och);
 	  write_to_descriptor (d->descriptor, buf, 0);
       }
   }
 	
-  fprintf (fp, "-1\n");
-  fclose (fp);
+  fprintf (fp, "MAXP %d\n-1\n", sysdata.maxplayers);
+  {
+      int failed = ferror(fp);
+      if (fclose(fp) != 0)
+          failed = 1;
+      if (failed)
+      {
+          unlink(COPYOVER_FILE);
+          log_string("Emergency copyover file write/close failed; aborted.");
+          return;
+      }
+  }
 	
   fclose (fpReserve);
   fclose (fpLOG);
@@ -676,6 +696,8 @@ void emergancy_copyover( void )
   sprintf (buf, "%d", port);
   sprintf (buf2, "%d", control);
   sprintf (buf3, "%d", control2);
+  strcpy (buf4, "0");
+  strcpy (buf5, "0");
 
   execl (EXE_FILE,  "dbzc", buf, "copyover", buf2, buf3, buf4, buf5, (char *) NULL);
 

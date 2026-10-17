@@ -367,7 +367,11 @@ void do_timers( CHAR_DATA *ch, char *argument )
 void do_clear( CHAR_DATA *ch, char *argument )
 {
   if (!IS_NPC(ch))
-  ch->pcdata->rank = "";
+  {
+    char *rank = STRALLOC( "" );
+    STRFREE( ch->pcdata->rank );
+    ch->pcdata->rank = rank;
+  }
 }
 void do_monkey( CHAR_DATA *ch, char *argument )
 {

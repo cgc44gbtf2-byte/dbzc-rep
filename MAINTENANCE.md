@@ -1,4 +1,4 @@
-# Maintenance batches 1–2
+# Maintenance batches 1–3
 
 This branch is a development baseline, **not a production security clearance**.
 
@@ -38,6 +38,8 @@ Requires Python 3 and a compiler with AddressSanitizer/UndefinedBehaviorSanitize
 python3 tests/connection_lifecycle.py
 sh tests/web_output_test.sh
 python3 tests/output_queue.py
+python3 tests/copyover_records.py
+python3 tests/rank_ownership.py
 git diff --check
 ```
 
@@ -54,6 +56,12 @@ The output tests extract the production queue/transport functions. They include
 a real nonblocking socketpair with a stalled peer and byte-exact resumed output,
 plus partial writes, EINTR/EAGAIN, zero/fatal sends, fairness, ordering, prompt and
 snoop retry behavior, overflow, graceful-close deadlines, and pager behavior.
+
+Rank tests use the actual interned-string allocator and extracted production
+load/mutation/free paths, checking reference counts, aliased input, repeated
+loads, shared values, rank commands, demotion, race changes and clearing.
+Copyover tests exercise the actual bounded parser/writers, restored string
+ownership, legacy records, malformed input, socket cleanup and error handling.
 
 These focused tests run with ASan/UBSan and leak detection; they do not establish
 that the whole server is free of leaks or memory corruption.
@@ -75,6 +83,27 @@ that the whole server is free of leaks or memory corruption.
   for at most eight pulses; forced/error/deadline closure aborts remaining output.
 - Add a read-only-permission GitHub Actions matrix for Ubuntu and Debian builds
   and all focused sanitizer regressions. No deployment step is included.
+- Use STRALLOC/STRFREE consistently for all player rank initialization,
+  replacement and cleanup, including commands and repeated player-file fields.
+- Share a bounded, versioned copyover writer between normal/emergency paths;
+  restore owned client strings and close unclaimed inherited client sockets.
+
+### Copyover record compatibility
+
+New files use DBZC2 records with hex-encoded string fields, preserving whitespace
+without ambiguity. The new reader also accepts historical normal and emergency
+records. Legacy emergency records lack room/client metadata; recovery uses
+temple/Unidentified defaults for those missing fields.
+
+Malformed, truncated, duplicate or unsupported records reject the entire
+recovery file and terminate recovery before any player is loaded, closing
+inherited sockets. Syntactically valid records for invalid/non-client sockets
+are diagnosed and skipped. Normal and emergency writers abort on record/file
+write failure before exec.
+
+Old executables do not understand DBZC2. Do not live-copyover into an older
+binary; use a controlled shutdown/restart for rollback. Emergency crash handling
+remains best-effort, not a guarantee that a corrupted process can recover.
 
 ### Transport contract
 
@@ -93,14 +122,13 @@ by the existing timeout policy.
 ## Verification and remaining work
 
 The full executable compiled and linked with GCC 15.3.0 and libxcrypt 4.4.38.
-All three focused regression suites passed locally with sanitizers. Legacy compiler warnings
+All five focused regression suites passed locally with sanitizers. Legacy compiler warnings
 remain. No public listener was started, no game-world boot/login test was run,
 and no whole-server memory profiling was performed.
 
 Still pending from the review:
 
-- Rank-string allocator ownership and remaining unbounded string operations.
-- Copyover client restoration and inconsistent emergency copyover records.
+- Remaining unbounded string operations.
 - Password-hash/transport modernization and legacy committed credential cleanup.
 - Replacing the bundled allocator and removing `-fcommon`.
 

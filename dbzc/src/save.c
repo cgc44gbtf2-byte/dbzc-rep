@@ -900,7 +900,7 @@ bool load_char_obj( DESCRIPTOR_DATA *d, char *name, bool preload, bool copyover 
         ch->pcdata->board		= &boards[DEFAULT_BOARD];
 	ch->pcdata->bamfin		= str_dup( "" );
 	ch->pcdata->bamfout		= str_dup( "" );
-	ch->pcdata->rank		= str_dup( "" );
+	ch->pcdata->rank		= STRALLOC( "" );
 	ch->pcdata->bestowments		= str_dup( "" );
 	ch->pcdata->title		= STRALLOC( "" );
 	ch->pcdata->homepage		= str_dup( "" );
@@ -1468,7 +1468,14 @@ void fread_char( CHAR_DATA *ch, FILE *fp, bool preload, bool copyover )
 	case 'R':
 	    KEY( "Race",        ch->race,		fread_number( fp ) );
 	    KEY( "Rage",        ch->rage,               fread_number( fp ) );
-            KEY( "Rank",        ch->pcdata->rank,	fread_string( fp ) );
+	    if ( !strcmp( word, "Rank" ) )
+	    {
+		char *rank = fread_string( fp );
+		STRFREE( ch->pcdata->rank );
+		ch->pcdata->rank = rank;
+		fMatch = TRUE;
+		break;
+	    }
 	    KEY( "Restore_time",ch->pcdata->restore_time, fread_number( fp ) );
 
 	    if ( !strcmp( word, "Room" ) )
@@ -1574,7 +1581,7 @@ void fread_char( CHAR_DATA *ch, FILE *fp, bool preload, bool copyover )
 		if (!ch->pcdata->bio)
 		  ch->pcdata->bio	= STRALLOC( "" );
 		if (!ch->pcdata->rank)
-		  ch->pcdata->rank	= str_dup( "" );
+		  ch->pcdata->rank	= STRALLOC( "" );
 		if (!ch->pcdata->bestowments)
 		  ch->pcdata->bestowments = str_dup( "" );
 		if (!ch->pcdata->title)

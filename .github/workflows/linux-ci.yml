@@ -50,3 +50,7 @@ jobs:
         run: timeout 120s sh tests/web_output_test.sh
       - name: Test nonblocking output with sanitizers
         run: timeout 120s python3 tests/output_queue.py
+      - name: Test copyover records and restoration with sanitizers
+        run: timeout 120s python3 tests/copyover_records.py
+      - name: Test rank string ownership with sanitizers
+        run: timeout 120s python3 tests/rank_ownership.py

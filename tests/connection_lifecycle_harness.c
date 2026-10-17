@@ -79,6 +79,9 @@ static int close_calls, bad_calls, bad_at, nonblock_fail, ban, messages, polls;
 static char *peer_ip = "127.0.0.1";
 
 void free_desc(DESCRIPTOR_DATA *);
+/* Transport draining is covered by output tests; lifecycle uses immediate close. */
+static void finish_output_close(DESCRIPTOR_DATA *d, bool force)
+{ (void)force; free_desc(d); }
 void close_socket(DESCRIPTOR_DATA *, bool);
 void new_descriptor(int);
 static void bug(const char *s, ...) { (void)s; }

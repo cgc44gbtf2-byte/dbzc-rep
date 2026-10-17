@@ -1,4 +1,4 @@
-# Maintenance batch 1
+# Maintenance batches 1–2
 
 This branch is a development baseline, **not a production security clearance**.
 
@@ -6,8 +6,10 @@ This branch is a development baseline, **not a production security clearance**.
 
 Deployment target: the latest stable Ubuntu or Debian release. Prefer a
 supported Ubuntu LTS release when choosing Ubuntu for a long-lived server.
-The current verification environment is not an Ubuntu/Debian installation;
-distribution-specific build and isolated startup checks remain required.
+GitHub Actions builds and runs the focused sanitizer tests in the official
+`ubuntu:latest` and `debian:stable` containers, logging the resolved OS/compiler
+versions. These tags follow upstream releases rather than pinning a deployment
+image. Isolated game-world startup checks remain required.
 
 Requirements: GCC, GNU Make, and libcrypt/libxcrypt development files.
 On Debian/Ubuntu the packages are `build-essential` and `libcrypt-dev`.
@@ -35,6 +37,7 @@ Requires Python 3 and a compiler with AddressSanitizer/UndefinedBehaviorSanitize
 ```sh
 python3 tests/connection_lifecycle.py
 sh tests/web_output_test.sh
+python3 tests/output_queue.py
 git diff --check
 ```
 
@@ -46,6 +49,11 @@ copyover recovery accounting, client cleanup, and disabled signup.
 The web tests compile the actual converter with an allocator test double. They
 cover literal printf directives, every supported color, HTML escaping, empty and
 large input, repeated conversion, allocation failures, and output errors.
+
+The output tests extract the production queue/transport functions. They include
+a real nonblocking socketpair with a stalled peer and byte-exact resumed output,
+plus partial writes, EINTR/EAGAIN, zero/fatal sends, fairness, ordering, prompt and
+snoop retry behavior, overflow, graceful-close deadlines, and pager behavior.
 
 These focused tests run with ASan/UBSan and leak detection; they do not establish
 that the whole server is free of leaks or memory corruption.
@@ -60,22 +68,41 @@ that the whole server is free of leaks or memory corruption.
   writer, releasing its allocated conversion result.
 - Replace repeated leaking string substitutions with an overflow-checked,
   one-pass HTML/color converter. Generated entities are not rescanned as colors.
+- Retain unsent output in a bounded 64 KiB per-client queue. Each pulse allows
+  at most 16 KiB and four send attempts per descriptor; EAGAIN yields immediately.
+- Latch output errors/overflow for safe event-loop closure instead of freeing a
+  descriptor inside an output caller. Graceful closes retain transport storage
+  for at most eight pulses; forced/error/deadline closure aborts remaining output.
+- Add a read-only-permission GitHub Actions matrix for Ubuntu and Debian builds
+  and all focused sanitizer regressions. No deployment step is included.
+
+### Transport contract
+
+For linked descriptors, `write_to_descriptor` returning TRUE now means accepted
+in order, not necessarily delivered. Prompt/snoop copies are prepared once, and
+retries drain the prepared prefix without duplicating it. Bare file descriptors
+(pre-link rejection/recovery probes) have bounded best-effort writes; FALSE may
+follow a sent prefix, so callers must not retry the whole message.
+
+Queues are process-local. Normal copyover now nonblockingly drains/checks queues
+before exec; pending/failed output aborts the copyover and removes its recovery
+file so the admin can retry after clients drain. Emergency crash recovery and
+process shutdown cannot promise delivery. Idle clients can still be disconnected
+by the existing timeout policy.
 
 ## Verification and remaining work
 
 The full executable compiled and linked with GCC 15.3.0 and libxcrypt 4.4.38.
-Both focused regression suites passed with sanitizers. Legacy compiler warnings
+All three focused regression suites passed locally with sanitizers. Legacy compiler warnings
 remain. No public listener was started, no game-world boot/login test was run,
 and no whole-server memory profiling was performed.
 
 Still pending from the review:
 
-- Nonblocking output/backpressure: `write_to_descriptor` still retries
-  EWOULDBLOCK without returning to the event loop.
 - Rank-string allocator ownership and remaining unbounded string operations.
 - Copyover client restoration and inconsistent emergency copyover records.
 - Password-hash/transport modernization and legacy committed credential cleanup.
-- Replacing the bundled allocator, removing `-fcommon`, and adding CI.
+- Replacing the bundled allocator and removing `-fcommon`.
 
 Keep the server isolated until these issues and full runtime verification have
 been addressed. Do not merge or deploy this batch solely because it builds.

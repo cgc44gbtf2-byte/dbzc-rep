@@ -35,6 +35,7 @@
 #include <dirent.h>
 #include <string.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include "mud.h"
 
 
@@ -754,6 +755,28 @@ void do_copyover( CHAR_DATA *ch, char *argument )
 
     log_string( "Executing Copyover...." );
     save_timers();
+    /*
+     * Output queues live in this process. Do not close resources or exec until
+     * every accepted byte has reached the kernel, including detached closes.
+     */
+    if ( !copyover_output_ready() )
+    {
+        if ( unlink(COPYOVER_FILE) < 0 && errno != ENOENT )
+        {
+            perror( "do_copyover: unlink aborted recovery file" );
+            bug( "%s", "Could not remove aborted copyover recovery file!" );
+        }
+        for ( d = first_descriptor; d; d = d->next )
+        {
+            CHAR_DATA *och = CH(d);
+            if ( och && och->pcdata )
+                och->pcdata->copyover = FALSE;
+        }
+        log_string( "Copyover aborted: output pending or failed." );
+        send_to_char( "Copyover aborted: client output is pending or failed. "
+                      "Retry after clients drain.\n\r", ch );
+        return;
+    }
     /* Close reserve and other always-open files and release other resources */
     FCLOSE( fpReserve );
     FCLOSE( fpLOG );

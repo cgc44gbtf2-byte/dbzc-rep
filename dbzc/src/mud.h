@@ -792,6 +792,13 @@ struct	descriptor_data
     char *		outbuf;
     unsigned long	outsize;
     int			outtop;
+    /* Prepared prefix: prompt/snoop copied once, retained until sent. */
+    int                 out_pending;
+    bool                out_error;
+    bool                out_prompted;
+    unsigned long       out_epoch;
+    int                 out_budget;
+    int                 out_calls;
     char *		pagebuf;
     unsigned long	pagesize;
     int			pagetop;
@@ -4581,6 +4588,7 @@ void    add_member      args( (char *name, char *shortname) );
 /* comm.c */
 int     file_size       args( ( char * buf ) );
 void    emergancy_copyover      args( ( void ) );
+bool    copyover_output_ready   args( ( void ) );
 void	close_socket	args( ( DESCRIPTOR_DATA *dclose, bool force ) );
 void	write_to_buffer	args( ( DESCRIPTOR_DATA *d, const char *txt,
 				int length ) );
